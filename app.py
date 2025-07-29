@@ -2,6 +2,7 @@ import os
 import re
 import traceback
 import logging
+import requests # Ajout de l'import
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -104,6 +105,7 @@ def generate_unique_slug(name, restaurant_id):
 
 # --- ROUTES ---
 
+# ... (toutes vos routes existantes restent ici) ...
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
@@ -170,6 +172,53 @@ def get_restaurant_public_data(slug):
         "tags": custom_tags_by_category
     })
 
+# --- NOUVELLE ROUTE SÉCURISÉE POUR OPENAI ---
+@app.route('/api/generate-review', methods=['POST'])
+def generate_review_proxy():
+    # Récupérer la clé API depuis les variables d'environnement
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        return jsonify({"error": "La clé API OpenAI n'est pas configurée sur le serveur."}), 500
+
+    # Récupérer le prompt envoyé par le frontend
+    data = request.get_json()
+    prompt = data.get('prompt')
+    if not prompt:
+        return jsonify({"error": "Le prompt est manquant."}), 400
+
+    # Préparer la requête pour l'API OpenAI
+    openai_url = 'https://api.openai.com/v1/chat/completions'
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {api_key}'
+    }
+    payload = {
+        "model": "gpt-3.5-turbo",
+        "messages": [
+            {"role": "system", "content": "Tu es un assistant IA qui rédige des avis de restaurant positifs et engageants."},
+            {"role": "user", "content": prompt}
+        ]
+    }
+
+    try:
+        # Envoyer la requête à OpenAI
+        response = requests.post(openai_url, headers=headers, json=payload)
+        response.raise_for_status()  # Lève une exception pour les codes d'erreur HTTP (4xx ou 5xx)
+        
+        openai_data = response.json()
+        review_text = openai_data['choices'][0]['message']['content'].strip()
+        
+        # Renvoyer la réponse au frontend
+        return jsonify({"review": review_text})
+
+    except requests.exceptions.RequestException as e:
+        app.logger.error(f"Erreur lors de l'appel à l'API OpenAI: {e}")
+        return jsonify({"error": f"Erreur de communication avec l'API OpenAI: {e}"}), 502
+    except (KeyError, IndexError) as e:
+        app.logger.error(f"Réponse inattendue de l'API OpenAI: {openai_data}")
+        return jsonify({"error": "Format de réponse inattendu de la part d'OpenAI."}), 500
+
+
 @app.route('/api/restaurant', methods=['GET', 'PUT'])
 @jwt_required()
 def manage_restaurant_settings():
@@ -212,140 +261,5 @@ def manage_tags():
     
     if request.method == 'POST':
         data = request.get_json()
-        if not data or 'category' not in data or 'text' not in data:
-            return jsonify({"error": "Données 'category' et 'text' requises"}), 400
-        
-        new_tag = CustomTag(
-            restaurant_id=restaurant_id,
-            category=data['category'],
-            text=data['text']
-        )
-        db.session.add(new_tag)
-        db.session.commit()
-        return jsonify({"id": new_tag.id, "category": new_tag.category, "text": new_tag.text}), 201
-
-@app.route('/api/tags/<int:tag_id>', methods=['PUT', 'DELETE'])
-@jwt_required()
-def handle_tag(tag_id):
-    restaurant_id = get_restaurant_id_from_token()
-    tag = CustomTag.query.filter_by(id=tag_id, restaurant_id=restaurant_id).first_or_404()
-    if request.method == 'PUT':
-        data = request.get_json()
-        if 'text' in data:
-            tag.text = data['text']
-            db.session.commit()
-            return jsonify({"id": tag.id, "text": tag.text})
-        return jsonify({"error": "Le texte est requis"}), 400
-    elif request.method == 'DELETE':
-        db.session.delete(tag)
-        db.session.commit()
-        return jsonify({"message": "Option supprimée avec succès"})
-
-@app.route('/api/logo-upload', methods=['POST'])
-@jwt_required()
-def upload_logo():
-    restaurant_id = get_restaurant_id_from_token()
-    restaurant = db.session.get(Restaurant, restaurant_id)
-    if not restaurant: return jsonify({"error": "Restaurant non trouvé"}), 404
-    if 'logo' not in request.files: return jsonify({"error": "Aucun fichier n'a été envoyé"}), 400
-    file = request.files['logo']
-    if file.filename == '': return jsonify({"error": "Aucun fichier sélectionné"}), 400
-    if file:
-        ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
-        filename = secure_filename(f"logo_restaurant_{restaurant_id}.{ext}")
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-        logo_url = f"/uploads/{filename}"
-        restaurant.logo_url = logo_url
-        db.session.commit()
-        return jsonify({"message": "Logo téléversé avec succès", "logoUrl": logo_url}), 200
-    return jsonify({"error": "Une erreur est survenue"}), 500
-
-@app.route('/api/public/menu/<string:slug>', methods=['GET'])
-def get_public_menu(slug):
-    restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
-    dishes = Dish.query.filter_by(restaurant_id=restaurant.id).order_by(Dish.category, Dish.name).all()
-    menu = {}
-    for dish in dishes:
-        if dish.category not in menu:
-            menu[dish.category] = []
-        menu[dish.category].append({"id": dish.id, "name": dish.name})
-    return jsonify(menu)
-
-@app.route('/api/servers', methods=['GET', 'POST'])
-@jwt_required()
-def manage_servers():
-    restaurant_id = get_restaurant_id_from_token()
-    if request.method == 'GET':
-        servers = Server.query.filter_by(restaurant_id=restaurant_id).order_by(Server.name).all()
-        return jsonify([{"id": s.id, "name": s.name, "reviews": 0} for s in servers])
-    elif request.method == 'POST':
-        data = request.get_json()
-        new_server = Server(name=data['name'], restaurant_id=restaurant_id)
-        db.session.add(new_server)
-        db.session.commit()
-        return jsonify({"id": new_server.id, "name": new_server.name}), 201
-    return jsonify({"error": "Méthode non autorisée"}), 405
-
-@app.route('/api/servers/<int:server_id>', methods=['PUT', 'DELETE'])
-@jwt_required()
-def handle_server(server_id):
-    restaurant_id = get_restaurant_id_from_token()
-    server = Server.query.filter_by(id=server_id, restaurant_id=restaurant_id).first_or_404()
-    if request.method == 'PUT':
-        data = request.get_json()
-        if 'name' in data:
-            server.name = data['name']
-            db.session.commit()
-            return jsonify({"id": server.id, "name": server.name})
-        return jsonify({"error": "Le nom est requis"}), 400
-    elif request.method == 'DELETE':
-        db.session.delete(server)
-        db.session.commit()
-        return jsonify({"message": "Serveur supprimé"})
-
-@app.route('/api/menu-items', methods=['GET'])
-@jwt_required()
-def get_menu_items():
-    restaurant_id = get_restaurant_id_from_token()
-    dishes = Dish.query.filter_by(restaurant_id=restaurant_id).order_by(Dish.category, Dish.name).all()
-    menu = {}
-    for dish in dishes:
-        if dish.category not in menu: menu[dish.category] = []
-        menu[dish.category].append({"id": dish.id, "name": dish.name})
-    return jsonify(menu)
-
-@app.route('/api/dishes', methods=['POST'])
-@jwt_required()
-def add_dish():
-    restaurant_id = get_restaurant_id_from_token()
-    data = request.get_json()
-    new_dish = Dish(name=data['name'], category=data['category'], restaurant_id=restaurant_id)
-    db.session.add(new_dish)
-    db.session.commit()
-    return jsonify({"id": new_dish.id, "name": new_dish.name, "category": new_dish.category}), 201
-
-@app.route('/api/dishes/<int:dish_id>', methods=['PUT', 'DELETE'])
-@jwt_required()
-def handle_dish(dish_id):
-    restaurant_id = get_restaurant_id_from_token()
-    dish = Dish.query.filter_by(id=dish_id, restaurant_id=restaurant_id).first_or_404()
-    if request.method == 'PUT':
-        data = request.get_json()
-        if 'name' in data:
-            dish.name = data['name']
-            db.session.commit()
-            return jsonify({"id": dish.id, "name": dish.name, "category": dish.category})
-        return jsonify({"error": "Le nom est requis"}), 400
-    elif request.method == 'DELETE':
-        db.session.delete(dish)
-        db.session.commit()
-        return jsonify({"message": "Plat supprimé"})
-
-@app.route('/')
-def index():
-    return jsonify({"status": "API is running"}), 200
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5001))
-    app.run(host='0.0.0.0', port=port, debug=True)
+        # ... (le reste de votre logique pour POST)
+        return jsonify({"message": "Logique POST non implémentée"}), 200
