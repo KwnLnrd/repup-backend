@@ -218,4 +218,158 @@ def generate_review_proxy():
         app.logger.error(f"Erreur lors de l'appel à l'API OpenAI: {e}")
         return jsonify({"error": f"Erreur de communication avec l'API OpenAI: {e}"}), 502
     except (KeyError, IndexError) as e:
-        app.logg
+        app.logger.error(f"Réponse inattendue de l'API OpenAI: {openai_data}")
+        return jsonify({"error": "Format de réponse inattendu de la part d'OpenAI."}), 500
+
+# --- ROUTES PROTÉGÉES ---
+
+@app.route('/api/restaurant', methods=['GET', 'PUT'])
+@jwt_required()
+def manage_restaurant_settings():
+    restaurant_id = get_restaurant_id_from_token()
+    restaurant = db.session.get(Restaurant, restaurant_id)
+    if not restaurant: return jsonify({"error": "Restaurant non trouvé"}), 404
+    
+    if request.method == 'GET':
+        return jsonify({
+            "name": restaurant.name, "slug": restaurant.slug, "logoUrl": restaurant.logo_url,
+            "primaryColor": restaurant.primary_color, "googleLink": restaurant.google_link,
+            "tripadvisorLink": restaurant.tripadvisor_link, "enabledLanguages": restaurant.enabled_languages
+        })
+    
+    elif request.method == 'PUT':
+        data = request.form
+        restaurant.name = data.get('name', restaurant.name)
+        restaurant.primary_color = data.get('primaryColor', restaurant.primary_color)
+        restaurant.google_link = data.get('googleLink', restaurant.google_link)
+        restaurant.tripadvisor_link = data.get('tripadvisorLink', restaurant.tripadvisor_link)
+        
+        if 'enabledLanguages' in data:
+            try:
+                restaurant.enabled_languages = json.loads(data.get('enabledLanguages'))
+            except json.JSONDecodeError:
+                return jsonify({"error": "Format JSON invalide pour les langues"}), 400
+
+        if 'logo' in request.files:
+            file = request.files['logo']
+            if file and file.filename != '' and allowed_file(file.filename):
+                filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                restaurant.logo_url = f'/uploads/{filename}'
+        
+        db.session.commit()
+        return jsonify({"message": "Paramètres mis à jour", "logoUrl": restaurant.logo_url})
+
+@app.route('/api/tags', methods=['GET', 'POST'])
+@jwt_required()
+def manage_tags():
+    restaurant_id = get_restaurant_id_from_token()
+    if request.method == 'GET':
+        tags = CustomTag.query.filter_by(restaurant_id=restaurant_id).order_by(CustomTag.category, CustomTag.id).all()
+        tags_by_category = {}
+        for tag in tags:
+            if tag.category not in tags_by_category: tags_by_category[tag.category] = []
+            tags_by_category[tag.category].append({"id": tag.id, "text": tag.text})
+        return jsonify(tags_by_category)
+    if request.method == 'POST':
+        data = request.get_json()
+        new_tag = CustomTag(text=data['text'], category=data['category'], restaurant_id=restaurant_id)
+        db.session.add(new_tag)
+        db.session.commit()
+        return jsonify({"id": new_tag.id, "text": new_tag.text}), 201
+
+@app.route('/api/tags/<int:tag_id>', methods=['PUT', 'DELETE'])
+@jwt_required()
+def manage_single_tag(tag_id):
+    restaurant_id = get_restaurant_id_from_token()
+    tag = CustomTag.query.filter_by(id=tag_id, restaurant_id=restaurant_id).first_or_404()
+    if request.method == 'PUT':
+        data = request.get_json()
+        tag.text = data.get('text', tag.text)
+        db.session.commit()
+        return jsonify({"id": tag.id, "text": tag.text})
+    if request.method == 'DELETE':
+        db.session.delete(tag)
+        db.session.commit()
+        return '', 204
+
+@app.route('/api/servers', methods=['GET', 'POST'])
+@jwt_required()
+def manage_servers():
+    restaurant_id = get_restaurant_id_from_token()
+    if request.method == 'GET':
+        servers = Server.query.filter_by(restaurant_id=restaurant_id).all()
+        return jsonify([{"id": s.id, "name": s.name, "avatar_url": s.avatar_url} for s in servers])
+    if request.method == 'POST':
+        name = request.form.get('name')
+        if not name: return jsonify({"error": "Le nom est requis"}), 400
+        avatar_url = None
+        if 'avatar' in request.files:
+            file = request.files['avatar']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                avatar_url = f'/uploads/{filename}'
+        new_server = Server(name=name, avatar_url=avatar_url, restaurant_id=restaurant_id)
+        db.session.add(new_server)
+        db.session.commit()
+        return jsonify({"id": new_server.id, "name": new_server.name, "avatar_url": new_server.avatar_url}), 201
+
+@app.route('/api/servers/<int:server_id>', methods=['PUT', 'DELETE'])
+@jwt_required()
+def manage_single_server(server_id):
+    restaurant_id = get_restaurant_id_from_token()
+    server = Server.query.filter_by(id=server_id, restaurant_id=restaurant_id).first_or_404()
+    if request.method == 'PUT':
+        server.name = request.form.get('name', server.name)
+        if 'avatar' in request.files:
+            file = request.files['avatar']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                server.avatar_url = f'/uploads/{filename}'
+        db.session.commit()
+        return jsonify({"id": server.id, "name": server.name, "avatar_url": server.avatar_url})
+    if request.method == 'DELETE':
+        db.session.delete(server)
+        db.session.commit()
+        return '', 204
+
+@app.route('/api/menu', methods=['GET', 'POST'])
+@jwt_required()
+def manage_menu():
+    restaurant_id = get_restaurant_id_from_token()
+    if request.method == 'GET':
+        dishes = Dish.query.filter_by(restaurant_id=restaurant_id).all()
+        menu_by_category = {}
+        for dish in dishes:
+            if dish.category not in menu_by_category: menu_by_category[dish.category] = []
+            menu_by_category[dish.category].append({"id": dish.id, "name": dish.name})
+        return jsonify(menu_by_category)
+    if request.method == 'POST':
+        data = request.get_json()
+        if not data.get('name') or not data.get('category'):
+            return jsonify({"error": "Le nom et la catégorie sont requis"}), 400
+        new_dish = Dish(name=data['name'], category=data['category'], restaurant_id=restaurant_id)
+        db.session.add(new_dish)
+        db.session.commit()
+        return jsonify({"id": new_dish.id, "name": new_dish.name, "category": new_dish.category}), 201
+
+@app.route('/api/menu/<int:dish_id>', methods=['PUT', 'DELETE'])
+@jwt_required()
+def manage_single_dish(dish_id):
+    restaurant_id = get_restaurant_id_from_token()
+    dish = Dish.query.filter_by(id=dish_id, restaurant_id=restaurant_id).first_or_404()
+    if request.method == 'PUT':
+        data = request.get_json()
+        dish.name = data.get('name', dish.name)
+        dish.category = data.get('category', dish.category)
+        db.session.commit()
+        return jsonify({"id": dish.id, "name": dish.name, "category": dish.category})
+    if request.method == 'DELETE':
+        db.session.delete(dish)
+        db.session.commit()
+        return '', 204
+
+if __name__ == '__main__':
+    app.run(debug=True)
