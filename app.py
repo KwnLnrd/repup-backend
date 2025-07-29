@@ -102,18 +102,10 @@ with app.app_context():
 
 @jwt.user_lookup_loader
 def user_lookup_callback(_jwt_header, jwt_data):
-    """
-    Cette fonction est appelée à chaque fois qu'une route protégée est accédée,
-    et elle charge l'utilisateur à partir de l'ID stocké dans le token.
-    """
     identity = jwt_data["sub"]
-    # CORRECTION : Convertir l'identité (qui est une chaîne dans le JWT) en entier
     return User.query.filter_by(id=int(identity)).one_or_none()
 
 def get_restaurant_id_from_token():
-    """
-    Récupère l'ID du restaurant associé à l'utilisateur actuellement connecté.
-    """
     current_user = get_current_user()
     if current_user:
         return current_user.restaurant_id
@@ -286,14 +278,20 @@ def manage_tags():
         db.session.commit()
         return jsonify({"id": new_tag.id, "text": new_tag.text}), 201
 
-@app.route('/api/tags/<int:tag_id>', methods=['DELETE'])
+@app.route('/api/tags/<int:tag_id>', methods=['PUT', 'DELETE'])
 @jwt_required()
-def delete_tag(tag_id):
+def manage_single_tag(tag_id):
     restaurant_id = get_restaurant_id_from_token()
     tag = CustomTag.query.filter_by(id=tag_id, restaurant_id=restaurant_id).first_or_404()
-    db.session.delete(tag)
-    db.session.commit()
-    return '', 204
+    if request.method == 'PUT':
+        data = request.get_json()
+        tag.text = data.get('text', tag.text)
+        db.session.commit()
+        return jsonify({"id": tag.id, "text": tag.text})
+    if request.method == 'DELETE':
+        db.session.delete(tag)
+        db.session.commit()
+        return '', 204
 
 @app.route('/api/servers', methods=['GET', 'POST'])
 @jwt_required()
@@ -317,14 +315,25 @@ def manage_servers():
         db.session.commit()
         return jsonify({"id": new_server.id, "name": new_server.name, "avatar_url": new_server.avatar_url}), 201
 
-@app.route('/api/servers/<int:server_id>', methods=['DELETE'])
+@app.route('/api/servers/<int:server_id>', methods=['PUT', 'DELETE'])
 @jwt_required()
-def delete_server(server_id):
+def manage_single_server(server_id):
     restaurant_id = get_restaurant_id_from_token()
     server = Server.query.filter_by(id=server_id, restaurant_id=restaurant_id).first_or_404()
-    db.session.delete(server)
-    db.session.commit()
-    return '', 204
+    if request.method == 'PUT':
+        server.name = request.form.get('name', server.name)
+        if 'avatar' in request.files:
+            file = request.files['avatar']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                server.avatar_url = f'/uploads/{filename}'
+        db.session.commit()
+        return jsonify({"id": server.id, "name": server.name, "avatar_url": server.avatar_url})
+    if request.method == 'DELETE':
+        db.session.delete(server)
+        db.session.commit()
+        return '', 204
 
 @app.route('/api/menu', methods=['GET', 'POST'])
 @jwt_required()
@@ -346,14 +355,21 @@ def manage_menu():
         db.session.commit()
         return jsonify({"id": new_dish.id, "name": new_dish.name, "category": new_dish.category}), 201
 
-@app.route('/api/menu/<int:dish_id>', methods=['DELETE'])
+@app.route('/api/menu/<int:dish_id>', methods=['PUT', 'DELETE'])
 @jwt_required()
-def delete_dish(dish_id):
+def manage_single_dish(dish_id):
     restaurant_id = get_restaurant_id_from_token()
     dish = Dish.query.filter_by(id=dish_id, restaurant_id=restaurant_id).first_or_404()
-    db.session.delete(dish)
-    db.session.commit()
-    return '', 204
+    if request.method == 'PUT':
+        data = request.get_json()
+        dish.name = data.get('name', dish.name)
+        dish.category = data.get('category', dish.category)
+        db.session.commit()
+        return jsonify({"id": dish.id, "name": dish.name, "category": dish.category})
+    if request.method == 'DELETE':
+        db.session.delete(dish)
+        db.session.commit()
+        return '', 204
 
 if __name__ == '__main__':
     app.run(debug=True)
