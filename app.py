@@ -19,7 +19,8 @@ load_dotenv()
 app = Flask(__name__)
 
 # --- CONFIGURATION DU DOSSIER DE TÉLÉVERSEMENT ---
-UPLOAD_FOLDER = '/var/data/uploads'
+# Utilisation d'un chemin absolu pour la robustesse en production
+UPLOAD_FOLDER = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
@@ -29,10 +30,8 @@ def allowed_file(filename):
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # --- LOGGING ---
+logging.basicConfig(level=logging.INFO)
 app.logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-handler.setLevel(logging.INFO)
-app.logger.addHandler(handler)
 
 # --- CORS ---
 CORS(app, origins=["*"], supports_credentials=True, allow_headers=["Authorization", "Content-Type"])
@@ -40,11 +39,10 @@ CORS(app, origins=["*"], supports_credentials=True, allow_headers=["Authorizatio
 # --- CONFIGURATION BDD & JWT ---
 database_url = os.getenv('DATABASE_URL')
 if not database_url:
-    raise RuntimeError("DATABASE_URL is not set.")
+    raise RuntimeError("DATABASE_URL is not set in .env file.")
+# Assurer la compatibilité avec Heroku/Render
 if database_url.startswith("postgres://"):
-    database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
-elif database_url.startswith("postgresql://"):
-     database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -97,7 +95,7 @@ class Restaurant(db.Model):
     name = db.Column(db.String(100), nullable=False)
     slug = db.Column(db.String(100), unique=True, nullable=False, index=True)
     logo_url = db.Column(db.Text, nullable=True)
-    primary_color = db.Column(db.String(7), default='#BF5B3F')
+    primary_color = db.Column(db.String(7), default='#D69E2E')
     google_link = db.Column(db.Text, nullable=True)
     tripadvisor_link = db.Column(db.Text, nullable=True)
     enabled_languages = db.Column(db.JSON, default=['fr', 'en'])
@@ -130,7 +128,7 @@ class Dish(db.Model):
 class Review(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
-    source = db.Column(db.String(20), nullable=False) 
+    source = db.Column(db.String(20), nullable=False) # 'google', 'tripadvisor', 'internal'
     author_name = db.Column(db.String(100))
     rating = db.Column(db.Float, nullable=False)
     content = db.Column(db.Text)
@@ -148,10 +146,13 @@ def save_reviews_to_db(reviews_data, restaurant_id, source):
     """
     Sauvegarde une liste d'avis parsés dans la base de données, en évitant les doublons.
     """
+    new_reviews_count = 0
     for review_item in reviews_data:
+        # Vérification plus robuste pour éviter les doublons basés sur le contenu et l'auteur
         existing_review = Review.query.filter_by(
             restaurant_id=restaurant_id, 
-            content=review_item.get('content')
+            content=review_item.get('content'),
+            author_name=review_item.get('author_name')
         ).first()
 
         if not existing_review and review_item.get('content'):
@@ -164,7 +165,11 @@ def save_reviews_to_db(reviews_data, restaurant_id, source):
                 review_date=parse_datetime(review_item.get('review_date')) if review_item.get('review_date') else datetime.utcnow()
             )
             db.session.add(new_review)
-    db.session.commit()
+            new_reviews_count += 1
+    if new_reviews_count > 0:
+        db.session.commit()
+    app.logger.info(f"{new_reviews_count} nouveaux avis de '{source}' ont été ajoutés.")
+
 
 def scrape_reviews_with_apify(actor_id, target_urls):
     """
@@ -172,24 +177,26 @@ def scrape_reviews_with_apify(actor_id, target_urls):
     """
     apify_token = os.getenv('APIFY_API_TOKEN')
     if not apify_token:
-        app.logger.error("Le token API d'Apify est manquant.")
+        app.logger.error("Le token API d'Apify (APIFY_API_TOKEN) est manquant dans le fichier .env.")
         return []
 
     try:
         client = ApifyClient(apify_token)
+        # Configuration optimisée pour des résultats rapides et pertinents
         run_input = {
             "startUrls": [{"url": url} for url in target_urls],
-            "maxReviews": 20,
-            "language": "fr"
+            "maxReviews": 50, # On peut augmenter si besoin
+            "language": "fr",
+            "maxConcurrency": 5
         }
         
-        app.logger.info(f"Lancement de l'Actor Apify '{actor_id}'...")
-        run = client.actor(actor_id).call(run_input=run_input)
+        app.logger.info(f"Lancement de l'Actor Apify '{actor_id}' pour les URLs: {target_urls}")
+        run = client.actor(actor_id).call(run_input=run_input, wait_for_finish=120) # Attente max de 2 minutes
         
-        app.logger.info(f"Récupération des résultats pour le run ID: {run['id']}...")
-        items = [item for item in client.dataset(run["defaultDatasetId"]).iterate_items()]
+        app.logger.info(f"Récupération des résultats pour le run ID: {run['defaultDatasetId']}")
+        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
         
-        app.logger.info(f"{len(items)} résultats récupérés de l'Actor '{actor_id}'.")
+        app.logger.info(f"{len(items)} résultats bruts récupérés de l'Actor '{actor_id}'.")
         return items
 
     except Exception as e:
@@ -202,6 +209,7 @@ def parse_apify_google_reviews(items):
     """
     parsed_reviews = []
     for item in items:
+        # On s'assure que l'avis a du contenu textuel pour être utile
         if item.get('text'):
             parsed_reviews.append({
                 'author_name': item.get('name', 'Utilisateur Google'),
@@ -269,7 +277,7 @@ def login():
 
 @app.route('/api/public/restaurant/<string:slug>', methods=['GET'])
 def get_restaurant_public_data(slug):
-    restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
+    restaurant = Restaurant.query.filter_by(slug=slug).first_or_404("Restaurant non trouvé")
     servers = Server.query.filter_by(restaurant_id=restaurant.id).all()
     
     selected_tag_keys = {tag.tag_key for tag in restaurant.tag_selections}
@@ -280,6 +288,7 @@ def get_restaurant_public_data(slug):
         for tag_data in tags_list:
             if tag_data['key'] in selected_tag_keys:
                 translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in restaurant.enabled_languages}
+                translations['fr'] = tag_data['fr'] # Assurer que le français est toujours là
                 tags_for_frontend[category].append({
                     "key": tag_data['key'],
                     "translations": translations
@@ -321,7 +330,7 @@ def generate_review_proxy():
         "messages": [{"role": "system", "content": "Tu es un assistant IA qui rédige des avis de restaurant positifs et engageants."}, {"role": "user", "content": prompt}]
     }
     try:
-        response = requests.post(openai_url, headers=headers, json=payload)
+        response = requests.post(openai_url, headers=headers, json=payload, timeout=20)
         response.raise_for_status()
         openai_data = response.json()
         review_text = openai_data['choices'][0]['message']['content'].strip()
@@ -401,7 +410,7 @@ def manage_options():
 def manage_servers():
     restaurant_id = get_restaurant_id_from_token()
     if request.method == 'GET':
-        servers = Server.query.filter_by(restaurant_id=restaurant_id).all()
+        servers = Server.query.filter_by(restaurant_id=restaurant_id).order_by(Server.name).all()
         return jsonify([{"id": s.id, "name": s.name, "avatar_url": s.avatar_url} for s in servers])
     if request.method == 'POST':
         name = request.form.get('name')
@@ -443,7 +452,7 @@ def manage_single_server(server_id):
 def manage_menu():
     restaurant_id = get_restaurant_id_from_token()
     if request.method == 'GET':
-        dishes = Dish.query.filter_by(restaurant_id=restaurant_id).all()
+        dishes = Dish.query.filter_by(restaurant_id=restaurant_id).order_by(Dish.category, Dish.name).all()
         menu_by_category = {}
         for dish in dishes:
             if dish.category not in menu_by_category: menu_by_category[dish.category] = []
@@ -474,6 +483,7 @@ def manage_single_dish(dish_id):
         db.session.commit()
         return '', 204
 
+# --- NOUVELLE ROUTE D'ANALYSE STRATÉGIQUE ---
 @app.route('/api/strategic-analysis', methods=['POST'])
 @jwt_required()
 def trigger_strategic_analysis():
@@ -482,55 +492,88 @@ def trigger_strategic_analysis():
     if not restaurant:
         return jsonify({"error": "Restaurant non trouvé"}), 404
 
-    app.logger.info(f"Lancement du scraping Apify pour le restaurant ID: {restaurant_id}")
-    
+    app.logger.info(f"Début de l'analyse stratégique pour le restaurant ID: {restaurant_id} ({restaurant.name})")
+
+    # Étape 1: Nettoyer les anciens avis scrapés pour rafraîchir les données
+    app.logger.info("Nettoyage des anciens avis externes...")
     Review.query.filter(
         Review.restaurant_id == restaurant_id,
         Review.source.in_(['google', 'tripadvisor'])
     ).delete()
     db.session.commit()
 
+    # Étape 2: Lancer le scraping des nouvelles données
     if restaurant.google_link:
-        actor_id = os.getenv("GOOGLE_MAPS_ACTOR_ID", "apify/google-maps-scraper")
+        app.logger.info(f"Lien Google trouvé: {restaurant.google_link}. Lancement du scraping.")
+        # L'ID de l'actor peut être stocké en variable d'environnement pour plus de flexibilité
+        actor_id = os.getenv("GOOGLE_MAPS_ACTOR_ID", "apify/google-maps-reviews-scraper")
         raw_google_reviews = scrape_reviews_with_apify(actor_id, [restaurant.google_link])
         if raw_google_reviews:
             parsed_reviews = parse_apify_google_reviews(raw_google_reviews)
             save_reviews_to_db(parsed_reviews, restaurant_id, 'google')
-            app.logger.info(f"{len(parsed_reviews)} avis Google parsés et sauvegardés.")
+            app.logger.info(f"{len(parsed_reviews)} avis Google ont été traités.")
+    else:
+        app.logger.warning("Aucun lien Google configuré pour ce restaurant.")
+    
+    # (Optionnel) Ajouter le scraping TripAdvisor ici sur le même modèle
+    # if restaurant.tripadvisor_link: ...
 
-    all_reviews = Review.query.filter_by(restaurant_id=restaurant_id).all()
+    # Étape 3: Récupérer tous les avis (internes + externes)
+    all_reviews = Review.query.filter_by(restaurant_id=restaurant_id).order_by(Review.created_at.desc()).all()
     if not all_reviews:
-        return jsonify({"error": "Aucun avis trouvé pour générer une analyse. Assurez-vous que vos liens sont corrects et que le scraping a fonctionné."}), 404
+        return jsonify({"error": "Aucun avis (interne ou externe) n'a été trouvé pour générer une analyse. Assurez-vous que vos liens de scraping sont corrects ou que vous avez des avis internes."}), 404
 
+    app.logger.info(f"Total de {len(all_reviews)} avis trouvés pour l'analyse.")
     review_contents = [r.content for r in all_reviews if r.content]
+
+    # Étape 4: Préparer le prompt pour l'IA
     prompt = f"""
-    Tu es un consultant expert pour restaurants. Analyse la liste d'avis suivante pour le restaurant "{restaurant.name}".
-    Fournis une analyse stratégique complète en JSON. Le JSON doit être valide et contenir uniquement les clés demandées.
-    Voici les avis :
-    {json.dumps(review_contents)}
+    En tant que consultant expert pour restaurants, analyse la liste d'avis suivante pour le restaurant "{restaurant.name}".
+    Fournis une analyse stratégique complète au format JSON. Le JSON doit être valide et contenir uniquement les clés demandées.
+
+    Voici les avis (les plus récents en premier) :
+    {json.dumps(review_contents[:100])}
+
     ---
-    Basé sur ces avis, fournis les éléments suivants :
-    1.  "executive_summary": Un résumé de 2-3 phrases des points clés.
-    2.  "strengths": Une liste de 3 à 5 points forts majeurs.
-    3.  "weaknesses": Une liste de 3 à 5 axes d'amélioration prioritaires.
-    4.  "opportunities": Une liste de 2-3 "pépites" ou opportunités inattendues.
-    5.  "proactive_suggestions": Une liste de 3 suggestions concrètes (Marketing, Opérationnel, Management). Formatte chaque suggestion comme "Catégorie: Suggestion".
+    En te basant sur ces avis, fournis les éléments suivants dans un objet JSON unique :
+    1.  "executive_summary": Un résumé percutant de 2-3 phrases sur les tendances générales, les points forts et les faiblesses.
+    2.  "strengths": Une liste de 3 à 5 points forts majeurs, cités de manière récurrente.
+    3.  "weaknesses": Une liste de 3 à 5 axes d'amélioration prioritaires, basés sur les critiques fréquentes.
+    4.  "opportunities": Une liste de 2-3 "pépites" ou opportunités inattendues (suggestions de clients, compliments sur des détails, etc.).
+    5.  "proactive_suggestions": Une liste de 3 suggestions concrètes et actionnables (Marketing, Opérationnel, Management). Formatte chaque suggestion comme "Catégorie: Suggestion détaillée.".
     """
     
+    # Étape 5: Appeler l'API d'IA
     api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key: return jsonify({"error": "La clé API OpenAI n'est pas configurée sur le serveur."}), 500
+    if not api_key: 
+        app.logger.error("Clé API OpenAI manquante.")
+        return jsonify({"error": "La clé API pour l'IA n'est pas configurée sur le serveur."}), 500
+
     openai_url = 'https://api.openai.com/v1/chat/completions'
     headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
-    payload = { "model": "gpt-4-turbo", "messages": [{"role": "user", "content": prompt}], "response_format": { "type": "json_object" } }
+    # Utilisation de gpt-4-turbo pour une meilleure qualité d'analyse et le support du format JSON
+    payload = { 
+        "model": "gpt-4-turbo", 
+        "messages": [{"role": "user", "content": prompt}], 
+        "response_format": { "type": "json_object" } 
+    }
     try:
-        response = requests.post(openai_url, headers=headers, json=payload, timeout=60)
+        app.logger.info("Envoi de la requête à l'API OpenAI...")
+        response = requests.post(openai_url, headers=headers, json=payload, timeout=90) # Timeout plus long pour l'analyse
         response.raise_for_status()
+        
+        # Le contenu est déjà un objet JSON grâce à "json_object"
         analysis_data = json.loads(response.json()['choices'][0]['message']['content'])
+        app.logger.info("Analyse stratégique générée avec succès.")
         return jsonify(analysis_data)
+    except requests.exceptions.Timeout:
+        app.logger.error("Timeout lors de l'appel à l'API OpenAI.")
+        return jsonify({"error": "La génération de l'analyse a pris trop de temps. Veuillez réessayer."}), 504
     except Exception as e:
         app.logger.error(f"Erreur lors de l'appel à l'API OpenAI: {e}")
-        return jsonify({"error": "Erreur lors de la communication avec l'IA."}), 502
+        return jsonify({"error": "Une erreur est survenue lors de la communication avec le service d'intelligence artificielle."}), 502
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Utilisation de Gunicorn recommandée pour la production, mais pour le dev local :
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
