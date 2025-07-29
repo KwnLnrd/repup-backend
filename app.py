@@ -103,7 +103,7 @@ class Restaurant(db.Model):
     servers = db.relationship('Server', back_populates='restaurant', cascade="all, delete-orphan")
     dishes = db.relationship('Dish', back_populates='restaurant', cascade="all, delete-orphan")
     tag_selections = db.relationship('RestaurantTag', back_populates='restaurant', cascade="all, delete-orphan")
-    reviews = db.relationship('Review', back_populates='restaurant', cascade="all, delete-orphan") # Ajout de la relation
+    reviews = db.relationship('Review', back_populates='restaurant', cascade="all, delete-orphan")
 
 class RestaurantTag(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -125,7 +125,6 @@ class Dish(db.Model):
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
     restaurant = db.relationship('Restaurant', back_populates='dishes')
 
-# NOUVEAU MODÈLE: Review
 class Review(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
@@ -397,4 +396,79 @@ def manage_single_dish(dish_id):
         dish.name = data.get('name', dish.name)
         dish.category = data.get('category', dish.category)
         db.session.commit()
-        return jsonify({"id": d
+        return jsonify({"id": dish.id, "name": dish.name, "category": dish.category})
+    if request.method == 'DELETE':
+        db.session.delete(dish)
+        db.session.commit()
+        return '', 204
+
+@app.route('/api/strategic-analysis', methods=['POST'])
+@jwt_required()
+def trigger_strategic_analysis():
+    restaurant_id = get_restaurant_id_from_token()
+    restaurant = db.session.get(Restaurant, restaurant_id)
+    if not restaurant:
+        return jsonify({"error": "Restaurant non trouvé"}), 404
+
+    existing_reviews_count = Review.query.filter_by(restaurant_id=restaurant_id).count()
+    if existing_reviews_count == 0:
+        dummy_reviews = [
+            Review(restaurant_id=restaurant_id, source='google', author_name='Jean Dupont', rating=5, content='Service impeccable et le risotto était divin ! Clara a été particulièrement souriante.', review_date=datetime.utcnow()),
+            Review(restaurant_id=restaurant_id, source='tripadvisor', author_name='Marie Curie', rating=4, content='Très bonne ambiance, mais un peu bruyant près des cuisines. Le boeuf était parfaitement cuit.', review_date=datetime.utcnow()),
+            Review(restaurant_id=restaurant_id, source='internal', author_name='Client Anonyme', rating=3, content='Le temps d\'attente pour avoir nos boissons était vraiment long un samedi soir.', review_date=datetime.utcnow()),
+            Review(restaurant_id=restaurant_id, source='google', author_name='Pierre Martin', rating=5, content='Le nouveau Risotto aux cèpes est une tuerie ! Et merci à Clara pour sa gentillesse.', review_date=datetime.utcnow()),
+            Review(restaurant_id=restaurant_id, source='google', author_name='Sophie L.', rating=5, content='Le pain servi en apéritif est exceptionnel, une super surprise !', review_date=datetime.utcnow()),
+        ]
+        db.session.add_all(dummy_reviews)
+        db.session.commit()
+
+    all_reviews = Review.query.filter_by(restaurant_id=restaurant_id).all()
+    
+    review_contents = [r.content for r in all_reviews if r.content]
+    prompt = f"""
+    Tu es un consultant expert pour restaurants. Analyse la liste d'avis suivante pour le restaurant "{restaurant.name}".
+    Fournis une analyse stratégique complète en JSON. Le JSON doit être valide et contenir uniquement les clés demandées.
+
+    Voici les avis :
+    {json.dumps(review_contents)}
+    ---
+    Basé sur ces avis, fournis les éléments suivants :
+    1.  "executive_summary": Un résumé de 2-3 phrases des points clés.
+    2.  "strengths": Une liste de 3 à 5 points forts majeurs.
+    3.  "weaknesses": Une liste de 3 à 5 axes d'amélioration prioritaires.
+    4.  "opportunities": Une liste de 2-3 "pépites" ou opportunités inattendues (suggestions ou compliments sur des détails surprenants).
+    5.  "proactive_suggestions": Une liste de 3 suggestions concrètes (une pour le Marketing, une pour l'Opérationnel, une pour le Management). Formatte chaque suggestion comme "Catégorie: Suggestion".
+    """
+
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key:
+        return jsonify({"error": "La clé API OpenAI n'est pas configurée sur le serveur."}), 500
+    
+    openai_url = 'https://api.openai.com/v1/chat/completions'
+    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
+    payload = {
+        "model": "gpt-4-turbo",
+        "messages": [{"role": "user", "content": prompt}],
+        "response_format": { "type": "json_object" }
+    }
+    
+    try:
+        response = requests.post(openai_url, headers=headers, json=payload)
+        response.raise_for_status()
+        openai_data = response.json()
+        analysis_content = openai_data['choices'][0]['message']['content']
+        
+        analysis_data = json.loads(analysis_content)
+        return jsonify(analysis_data)
+        
+    except requests.exceptions.RequestException as e:
+        app.logger.error(f"Erreur lors de l'appel à l'API OpenAI: {e}")
+        return jsonify({"error": f"Erreur de communication avec l'API OpenAI: {e}"}), 502
+    except (KeyError, IndexError, json.JSONDecodeError) as e:
+        app.logger.error(f"Réponse inattendue ou invalide de l'API OpenAI: {e}")
+        app.logger.error(f"Contenu reçu: {analysis_content}")
+        return jsonify({"error": "Format de réponse inattendu ou invalide de la part d'OpenAI."}), 500
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
