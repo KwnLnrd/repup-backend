@@ -2,7 +2,7 @@ import os
 import re
 import traceback
 import logging
-import requests # Ajout de l'import
+import requests
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -105,7 +105,6 @@ def generate_unique_slug(name, restaurant_id):
 
 # --- ROUTES ---
 
-# ... (toutes vos routes existantes restent ici) ...
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
@@ -172,21 +171,35 @@ def get_restaurant_public_data(slug):
         "tags": custom_tags_by_category
     })
 
-# --- NOUVELLE ROUTE SÉCURISÉE POUR OPENAI ---
+# --- NOUVELLE ROUTE POUR LE MENU ---
+@app.route('/api/public/menu/<string:slug>', methods=['GET'])
+def get_public_menu(slug):
+    restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
+    dishes = Dish.query.filter_by(restaurant_id=restaurant.id).all()
+    
+    menu_by_category = {}
+    for dish in dishes:
+        if dish.category not in menu_by_category:
+            menu_by_category[dish.category] = []
+        menu_by_category[dish.category].append({
+            "id": dish.id,
+            "name": dish.name
+        })
+        
+    return jsonify(menu_by_category)
+
+# --- ROUTE SÉCURISÉE POUR OPENAI ---
 @app.route('/api/generate-review', methods=['POST'])
 def generate_review_proxy():
-    # Récupérer la clé API depuis les variables d'environnement
     api_key = os.getenv('OPENAI_API_KEY')
     if not api_key:
         return jsonify({"error": "La clé API OpenAI n'est pas configurée sur le serveur."}), 500
 
-    # Récupérer le prompt envoyé par le frontend
     data = request.get_json()
     prompt = data.get('prompt')
     if not prompt:
         return jsonify({"error": "Le prompt est manquant."}), 400
 
-    # Préparer la requête pour l'API OpenAI
     openai_url = 'https://api.openai.com/v1/chat/completions'
     headers = {
         'Content-Type': 'application/json',
@@ -201,14 +214,12 @@ def generate_review_proxy():
     }
 
     try:
-        # Envoyer la requête à OpenAI
         response = requests.post(openai_url, headers=headers, json=payload)
-        response.raise_for_status()  # Lève une exception pour les codes d'erreur HTTP (4xx ou 5xx)
+        response.raise_for_status()
         
         openai_data = response.json()
         review_text = openai_data['choices'][0]['message']['content'].strip()
         
-        # Renvoyer la réponse au frontend
         return jsonify({"review": review_text})
 
     except requests.exceptions.RequestException as e:
@@ -261,5 +272,4 @@ def manage_tags():
     
     if request.method == 'POST':
         data = request.get_json()
-        # ... (le reste de votre logique pour POST)
         return jsonify({"message": "Logique POST non implémentée"}), 200
