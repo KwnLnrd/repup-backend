@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from flask_jwt_extended import create_access_token, jwt_required, JWTManager, get_current_user
+from dateutil.parser import parse as parse_datetime
+from apify_client import ApifyClient
 
 # --- CONFIGURATION INITIALE ---
 load_dotenv()
@@ -128,7 +130,7 @@ class Dish(db.Model):
 class Review(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
-    source = db.Column(db.String(20), nullable=False) # 'google', 'tripadvisor', 'internal'
+    source = db.Column(db.String(20), nullable=False) 
     author_name = db.Column(db.String(100))
     rating = db.Column(db.Float, nullable=False)
     content = db.Column(db.Text)
@@ -139,6 +141,76 @@ class Review(db.Model):
 
 with app.app_context():
     db.create_all()
+
+# --- FONCTIONS HELPERS POUR LE SCRAPING ET LA SAUVEGARDE ---
+
+def save_reviews_to_db(reviews_data, restaurant_id, source):
+    """
+    Sauvegarde une liste d'avis parsés dans la base de données, en évitant les doublons.
+    """
+    for review_item in reviews_data:
+        existing_review = Review.query.filter_by(
+            restaurant_id=restaurant_id, 
+            content=review_item.get('content')
+        ).first()
+
+        if not existing_review and review_item.get('content'):
+            new_review = Review(
+                restaurant_id=restaurant_id,
+                source=source,
+                author_name=review_item.get('author_name'),
+                rating=float(review_item.get('rating', 0)),
+                content=review_item.get('content'),
+                review_date=parse_datetime(review_item.get('review_date')) if review_item.get('review_date') else datetime.utcnow()
+            )
+            db.session.add(new_review)
+    db.session.commit()
+
+def scrape_reviews_with_apify(actor_id, target_urls):
+    """
+    Lance un Actor Apify, attend la fin de l'exécution et retourne les résultats.
+    """
+    apify_token = os.getenv('APIFY_API_TOKEN')
+    if not apify_token:
+        app.logger.error("Le token API d'Apify est manquant.")
+        return []
+
+    try:
+        client = ApifyClient(apify_token)
+        run_input = {
+            "startUrls": [{"url": url} for url in target_urls],
+            "maxReviews": 20,
+            "language": "fr"
+        }
+        
+        app.logger.info(f"Lancement de l'Actor Apify '{actor_id}'...")
+        run = client.actor(actor_id).call(run_input=run_input)
+        
+        app.logger.info(f"Récupération des résultats pour le run ID: {run['id']}...")
+        items = [item for item in client.dataset(run["defaultDatasetId"]).iterate_items()]
+        
+        app.logger.info(f"{len(items)} résultats récupérés de l'Actor '{actor_id}'.")
+        return items
+
+    except Exception as e:
+        app.logger.error(f"Erreur lors de l'exécution de l'Actor Apify '{actor_id}': {e}")
+        return []
+
+def parse_apify_google_reviews(items):
+    """
+    Transforme les résultats bruts de l'Actor Google Maps en notre format standard.
+    """
+    parsed_reviews = []
+    for item in items:
+        if item.get('text'):
+            parsed_reviews.append({
+                'author_name': item.get('name', 'Utilisateur Google'),
+                'rating': item.get('stars', 0),
+                'content': item.get('text'),
+                'review_date': item.get('publishedAtDate', str(datetime.utcnow()))
+            })
+    return parsed_reviews
+
 
 # --- GESTION DE L'UTILISATEUR JWT ---
 @jwt.user_lookup_loader
@@ -410,25 +482,30 @@ def trigger_strategic_analysis():
     if not restaurant:
         return jsonify({"error": "Restaurant non trouvé"}), 404
 
-    existing_reviews_count = Review.query.filter_by(restaurant_id=restaurant_id).count()
-    if existing_reviews_count == 0:
-        dummy_reviews = [
-            Review(restaurant_id=restaurant_id, source='google', author_name='Jean Dupont', rating=5, content='Service impeccable et le risotto était divin ! Clara a été particulièrement souriante.', review_date=datetime.utcnow()),
-            Review(restaurant_id=restaurant_id, source='tripadvisor', author_name='Marie Curie', rating=4, content='Très bonne ambiance, mais un peu bruyant près des cuisines. Le boeuf était parfaitement cuit.', review_date=datetime.utcnow()),
-            Review(restaurant_id=restaurant_id, source='internal', author_name='Client Anonyme', rating=3, content='Le temps d\'attente pour avoir nos boissons était vraiment long un samedi soir.', review_date=datetime.utcnow()),
-            Review(restaurant_id=restaurant_id, source='google', author_name='Pierre Martin', rating=5, content='Le nouveau Risotto aux cèpes est une tuerie ! Et merci à Clara pour sa gentillesse.', review_date=datetime.utcnow()),
-            Review(restaurant_id=restaurant_id, source='google', author_name='Sophie L.', rating=5, content='Le pain servi en apéritif est exceptionnel, une super surprise !', review_date=datetime.utcnow()),
-        ]
-        db.session.add_all(dummy_reviews)
-        db.session.commit()
+    app.logger.info(f"Lancement du scraping Apify pour le restaurant ID: {restaurant_id}")
+    
+    Review.query.filter(
+        Review.restaurant_id == restaurant_id,
+        Review.source.in_(['google', 'tripadvisor'])
+    ).delete()
+    db.session.commit()
+
+    if restaurant.google_link:
+        actor_id = os.getenv("GOOGLE_MAPS_ACTOR_ID", "apify/google-maps-scraper")
+        raw_google_reviews = scrape_reviews_with_apify(actor_id, [restaurant.google_link])
+        if raw_google_reviews:
+            parsed_reviews = parse_apify_google_reviews(raw_google_reviews)
+            save_reviews_to_db(parsed_reviews, restaurant_id, 'google')
+            app.logger.info(f"{len(parsed_reviews)} avis Google parsés et sauvegardés.")
 
     all_reviews = Review.query.filter_by(restaurant_id=restaurant_id).all()
-    
+    if not all_reviews:
+        return jsonify({"error": "Aucun avis trouvé pour générer une analyse. Assurez-vous que vos liens sont corrects et que le scraping a fonctionné."}), 404
+
     review_contents = [r.content for r in all_reviews if r.content]
     prompt = f"""
     Tu es un consultant expert pour restaurants. Analyse la liste d'avis suivante pour le restaurant "{restaurant.name}".
     Fournis une analyse stratégique complète en JSON. Le JSON doit être valide et contenir uniquement les clés demandées.
-
     Voici les avis :
     {json.dumps(review_contents)}
     ---
@@ -436,38 +513,23 @@ def trigger_strategic_analysis():
     1.  "executive_summary": Un résumé de 2-3 phrases des points clés.
     2.  "strengths": Une liste de 3 à 5 points forts majeurs.
     3.  "weaknesses": Une liste de 3 à 5 axes d'amélioration prioritaires.
-    4.  "opportunities": Une liste de 2-3 "pépites" ou opportunités inattendues (suggestions ou compliments sur des détails surprenants).
-    5.  "proactive_suggestions": Une liste de 3 suggestions concrètes (une pour le Marketing, une pour l'Opérationnel, une pour le Management). Formatte chaque suggestion comme "Catégorie: Suggestion".
+    4.  "opportunities": Une liste de 2-3 "pépites" ou opportunités inattendues.
+    5.  "proactive_suggestions": Une liste de 3 suggestions concrètes (Marketing, Opérationnel, Management). Formatte chaque suggestion comme "Catégorie: Suggestion".
     """
-
-    api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key:
-        return jsonify({"error": "La clé API OpenAI n'est pas configurée sur le serveur."}), 500
     
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key: return jsonify({"error": "La clé API OpenAI n'est pas configurée sur le serveur."}), 500
     openai_url = 'https://api.openai.com/v1/chat/completions'
     headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
-    payload = {
-        "model": "gpt-4-turbo",
-        "messages": [{"role": "user", "content": prompt}],
-        "response_format": { "type": "json_object" }
-    }
-    
+    payload = { "model": "gpt-4-turbo", "messages": [{"role": "user", "content": prompt}], "response_format": { "type": "json_object" } }
     try:
-        response = requests.post(openai_url, headers=headers, json=payload)
+        response = requests.post(openai_url, headers=headers, json=payload, timeout=60)
         response.raise_for_status()
-        openai_data = response.json()
-        analysis_content = openai_data['choices'][0]['message']['content']
-        
-        analysis_data = json.loads(analysis_content)
+        analysis_data = json.loads(response.json()['choices'][0]['message']['content'])
         return jsonify(analysis_data)
-        
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         app.logger.error(f"Erreur lors de l'appel à l'API OpenAI: {e}")
-        return jsonify({"error": f"Erreur de communication avec l'API OpenAI: {e}"}), 502
-    except (KeyError, IndexError, json.JSONDecodeError) as e:
-        app.logger.error(f"Réponse inattendue ou invalide de l'API OpenAI: {e}")
-        app.logger.error(f"Contenu reçu: {analysis_content}")
-        return jsonify({"error": "Format de réponse inattendu ou invalide de la part d'OpenAI."}), 500
+        return jsonify({"error": "Erreur lors de la communication avec l'IA."}), 502
 
 
 if __name__ == '__main__':
