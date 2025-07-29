@@ -107,8 +107,12 @@ class Dish(db.Model):
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
     restaurant = db.relationship('Restaurant', back_populates='dishes')
 
-with app.app_context():
-    db.create_all()
+# Le bloc suivant est commenté pour améliorer la stabilité au démarrage.
+# Il tente de créer les tables de la base de données à chaque lancement, ce qui peut
+# provoquer des plantages si la base de données n'est pas immédiatement disponible.
+# Les tables devraient déjà exister après une première exécution réussie.
+# with app.app_context():
+#     db.create_all()
 
 def get_restaurant_id_from_token():
     return get_jwt()["restaurant_id"]
