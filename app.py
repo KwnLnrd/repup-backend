@@ -90,8 +90,6 @@ class CustomTag(db.Model):
     restaurant = db.relationship('Restaurant', back_populates='custom_tags')
 
 # --- CRÉATION DES TABLES DE LA BASE DE DONNÉES ---
-# Cette commande s'assure que toutes les tables définies dans les modèles ci-dessus
-# existent bien dans la base de données au démarrage de l'application.
 with app.app_context():
     db.create_all()
 
@@ -114,7 +112,6 @@ def register():
     new_restaurant = Restaurant(name=restaurant_name, slug=slug)
     db.session.add(new_restaurant)
     db.session.flush()
-    # Ajout des tags par défaut pour le nouveau restaurant
     default_tags = {
         'service': ["Attentionné", "Souriant", "Professionnel", "Efficace", "De bon conseil", "Discret"],
         'occasion': ["Anniversaire", "Dîner romantique", "Entre amis", "En famille", "Affaires", "Simple visite"],
@@ -164,7 +161,30 @@ def get_restaurant_public_data(slug):
         "tags": custom_tags_by_category
     })
 
-# --- NOUVELLES ROUTES POUR LA GESTION DES TAGS ---
+@app.route('/api/restaurant', methods=['GET', 'PUT'])
+@jwt_required()
+def manage_restaurant_settings():
+    restaurant_id = get_restaurant_id_from_token()
+    restaurant = db.session.get(Restaurant, restaurant_id)
+    if not restaurant: return jsonify({"error": "Restaurant non trouvé"}), 404
+    if request.method == 'GET':
+        return jsonify({
+            "name": restaurant.name, "slug": restaurant.slug, "logoUrl": restaurant.logo_url,
+            "primaryColor": restaurant.primary_color, "googleLink": restaurant.google_link,
+            "tripadvisorLink": restaurant.tripadvisor_link, "enabledLanguages": restaurant.enabled_languages
+        })
+    elif request.method == 'PUT':
+        data = request.get_json()
+        restaurant.name = data.get('name', restaurant.name) # MODIFICATION ICI
+        restaurant.primary_color = data.get('primaryColor', restaurant.primary_color)
+        restaurant.google_link = data.get('googleLink', restaurant.google_link)
+        restaurant.tripadvisor_link = data.get('tripadvisorLink', restaurant.tripadvisor_link)
+        restaurant.enabled_languages = data.get('enabledLanguages', restaurant.enabled_languages)
+        db.session.commit()
+        return jsonify({"message": "Paramètres mis à jour"})
+    return jsonify({"error": "Méthode non autorisée"}), 405
+
+# ... (le reste du code de app.py reste identique)
 @app.route('/api/tags', methods=['GET', 'POST'])
 @jwt_required()
 def manage_tags():
@@ -231,28 +251,6 @@ def get_public_menu(slug):
             menu[dish.category] = []
         menu[dish.category].append({"id": dish.id, "name": dish.name})
     return jsonify(menu)
-
-@app.route('/api/restaurant', methods=['GET', 'PUT'])
-@jwt_required()
-def manage_restaurant_settings():
-    restaurant_id = get_restaurant_id_from_token()
-    restaurant = db.session.get(Restaurant, restaurant_id)
-    if not restaurant: return jsonify({"error": "Restaurant non trouvé"}), 404
-    if request.method == 'GET':
-        return jsonify({
-            "name": restaurant.name, "slug": restaurant.slug, "logoUrl": restaurant.logo_url,
-            "primaryColor": restaurant.primary_color, "googleLink": restaurant.google_link,
-            "tripadvisorLink": restaurant.tripadvisor_link, "enabledLanguages": restaurant.enabled_languages
-        })
-    elif request.method == 'PUT':
-        data = request.get_json()
-        restaurant.primary_color = data.get('primaryColor', restaurant.primary_color)
-        restaurant.google_link = data.get('googleLink', restaurant.google_link)
-        restaurant.tripadvisor_link = data.get('tripadvisorLink', restaurant.tripadvisor_link)
-        restaurant.enabled_languages = data.get('enabledLanguages', restaurant.enabled_languages)
-        db.session.commit()
-        return jsonify({"message": "Paramètres mis à jour"})
-    return jsonify({"error": "Méthode non autorisée"}), 405
 
 @app.route('/api/servers', methods=['GET', 'POST'])
 @jwt_required()
