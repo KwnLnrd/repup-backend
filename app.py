@@ -18,9 +18,14 @@ load_dotenv()
 app = Flask(__name__)
 
 # --- CONFIGURATION DU DOSSIER DE TÉLÉVERSEMENT ---
-UPLOAD_FOLDER = '/var/data/uploads'
+UPLOAD_FOLDER = 'uploads' # Utiliser un chemin relatif pour la compatibilité
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # --- LOGGING ---
 app.logger.setLevel(logging.INFO)
@@ -94,11 +99,16 @@ class CustomTag(db.Model):
 with app.app_context():
     db.create_all()
 
+@jwt.user_lookup_loader
+def user_lookup_callback(_jwt_header, jwt_data):
+    identity = jwt_data["sub"]
+    return User.query.filter_by(id=identity).one_or_none()
+
 def get_restaurant_id_from_token():
-    return get_jwt()["restaurant_id"]
+    user = get_jwt_identity()
+    return User.query.get(user).restaurant_id
 
 def generate_unique_slug(name, restaurant_id):
-    """Génère un slug unique à partir d'un nom."""
     base_slug = name.lower().replace(' ', '-')
     base_slug = re.sub(r'[^a-z0-9-]', '', base_slug)
     return f"{base_slug}-{restaurant_id}"
@@ -144,10 +154,7 @@ def login():
     email, password = data.get('email'), data.get('password')
     user = User.query.filter_by(email=email).first()
     if user and check_password_hash(user.password_hash, password):
-        access_token = create_access_token(
-            identity=str(user.id), 
-            additional_claims={"restaurant_id": user.restaurant_id, "restaurant_slug": user.restaurant.slug}
-        )
+        access_token = create_access_token(identity=user.id)
         return jsonify(access_token=access_token)
     return jsonify({"error": "Identifiants invalides"}), 401
 
@@ -171,7 +178,6 @@ def get_restaurant_public_data(slug):
         "tags": custom_tags_by_category
     })
 
-# --- NOUVELLE ROUTE POUR LE MENU ---
 @app.route('/api/public/menu/<string:slug>', methods=['GET'])
 def get_public_menu(slug):
     restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
@@ -181,47 +187,30 @@ def get_public_menu(slug):
     for dish in dishes:
         if dish.category not in menu_by_category:
             menu_by_category[dish.category] = []
-        menu_by_category[dish.category].append({
-            "id": dish.id,
-            "name": dish.name
-        })
-        
+        menu_by_category[dish.category].append({"id": dish.id, "name": dish.name})
     return jsonify(menu_by_category)
 
-# --- ROUTE SÉCURISÉE POUR OPENAI ---
 @app.route('/api/generate-review', methods=['POST'])
 def generate_review_proxy():
     api_key = os.getenv('OPENAI_API_KEY')
     if not api_key:
         return jsonify({"error": "La clé API OpenAI n'est pas configurée sur le serveur."}), 500
-
     data = request.get_json()
     prompt = data.get('prompt')
     if not prompt:
         return jsonify({"error": "Le prompt est manquant."}), 400
-
     openai_url = 'https://api.openai.com/v1/chat/completions'
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {api_key}'
-    }
+    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
     payload = {
         "model": "gpt-3.5-turbo",
-        "messages": [
-            {"role": "system", "content": "Tu es un assistant IA qui rédige des avis de restaurant positifs et engageants."},
-            {"role": "user", "content": prompt}
-        ]
+        "messages": [{"role": "system", "content": "Tu es un assistant IA qui rédige des avis de restaurant positifs et engageants."}, {"role": "user", "content": prompt}]
     }
-
     try:
         response = requests.post(openai_url, headers=headers, json=payload)
         response.raise_for_status()
-        
         openai_data = response.json()
         review_text = openai_data['choices'][0]['message']['content'].strip()
-        
         return jsonify({"review": review_text})
-
     except requests.exceptions.RequestException as e:
         app.logger.error(f"Erreur lors de l'appel à l'API OpenAI: {e}")
         return jsonify({"error": f"Erreur de communication avec l'API OpenAI: {e}"}), 502
@@ -229,6 +218,7 @@ def generate_review_proxy():
         app.logger.error(f"Réponse inattendue de l'API OpenAI: {openai_data}")
         return jsonify({"error": "Format de réponse inattendu de la part d'OpenAI."}), 500
 
+# --- ROUTES PROTÉGÉES ---
 
 @app.route('/api/restaurant', methods=['GET', 'PUT'])
 @jwt_required()
@@ -243,19 +233,22 @@ def manage_restaurant_settings():
             "tripadvisorLink": restaurant.tripadvisor_link, "enabledLanguages": restaurant.enabled_languages
         })
     elif request.method == 'PUT':
-        data = request.get_json()
-        
-        new_name = data.get('name')
-        if new_name and new_name != restaurant.name:
-            restaurant.name = new_name
-            restaurant.slug = generate_unique_slug(new_name, restaurant.id)
-
+        data = request.form
+        restaurant.name = data.get('name', restaurant.name)
         restaurant.primary_color = data.get('primaryColor', restaurant.primary_color)
         restaurant.google_link = data.get('googleLink', restaurant.google_link)
         restaurant.tripadvisor_link = data.get('tripadvisorLink', restaurant.tripadvisor_link)
-        restaurant.enabled_languages = data.get('enabledLanguages', restaurant.enabled_languages)
+        restaurant.enabled_languages = request.get_json().get('enabledLanguages', restaurant.enabled_languages)
+        
+        if 'logo' in request.files:
+            file = request.files['logo']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                restaurant.logo_url = f'/uploads/{filename}'
+        
         db.session.commit()
-        return jsonify({"message": "Paramètres mis à jour", "newSlug": restaurant.slug})
+        return jsonify({"message": "Paramètres mis à jour"})
 
 @app.route('/api/tags', methods=['GET', 'POST'])
 @jwt_required()
@@ -265,11 +258,84 @@ def manage_tags():
         tags = CustomTag.query.filter_by(restaurant_id=restaurant_id).order_by(CustomTag.category, CustomTag.id).all()
         tags_by_category = {}
         for tag in tags:
-            if tag.category not in tags_by_category:
-                tags_by_category[tag.category] = []
+            if tag.category not in tags_by_category: tags_by_category[tag.category] = []
             tags_by_category[tag.category].append({"id": tag.id, "text": tag.text})
         return jsonify(tags_by_category)
-    
     if request.method == 'POST':
         data = request.get_json()
-        return jsonify({"message": "Logique POST non implémentée"}), 200
+        new_tag = CustomTag(text=data['text'], category=data['category'], restaurant_id=restaurant_id)
+        db.session.add(new_tag)
+        db.session.commit()
+        return jsonify({"id": new_tag.id, "text": new_tag.text}), 201
+
+@app.route('/api/tags/<int:tag_id>', methods=['DELETE'])
+@jwt_required()
+def delete_tag(tag_id):
+    restaurant_id = get_restaurant_id_from_token()
+    tag = CustomTag.query.filter_by(id=tag_id, restaurant_id=restaurant_id).first_or_404()
+    db.session.delete(tag)
+    db.session.commit()
+    return '', 204
+
+@app.route('/api/servers', methods=['GET', 'POST'])
+@jwt_required()
+def manage_servers():
+    restaurant_id = get_restaurant_id_from_token()
+    if request.method == 'GET':
+        servers = Server.query.filter_by(restaurant_id=restaurant_id).all()
+        return jsonify([{"id": s.id, "name": s.name, "avatar_url": s.avatar_url} for s in servers])
+    if request.method == 'POST':
+        name = request.form.get('name')
+        if not name: return jsonify({"error": "Le nom est requis"}), 400
+        avatar_url = None
+        if 'avatar' in request.files:
+            file = request.files['avatar']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                avatar_url = f'/uploads/{filename}'
+        new_server = Server(name=name, avatar_url=avatar_url, restaurant_id=restaurant_id)
+        db.session.add(new_server)
+        db.session.commit()
+        return jsonify({"id": new_server.id, "name": new_server.name, "avatar_url": new_server.avatar_url}), 201
+
+@app.route('/api/servers/<int:server_id>', methods=['DELETE'])
+@jwt_required()
+def delete_server(server_id):
+    restaurant_id = get_restaurant_id_from_token()
+    server = Server.query.filter_by(id=server_id, restaurant_id=restaurant_id).first_or_404()
+    db.session.delete(server)
+    db.session.commit()
+    return '', 204
+
+@app.route('/api/menu', methods=['GET', 'POST'])
+@jwt_required()
+def manage_menu():
+    restaurant_id = get_restaurant_id_from_token()
+    if request.method == 'GET':
+        dishes = Dish.query.filter_by(restaurant_id=restaurant_id).all()
+        menu_by_category = {}
+        for dish in dishes:
+            if dish.category not in menu_by_category: menu_by_category[dish.category] = []
+            menu_by_category[dish.category].append({"id": dish.id, "name": dish.name})
+        return jsonify(menu_by_category)
+    if request.method == 'POST':
+        data = request.get_json()
+        if not data.get('name') or not data.get('category'):
+            return jsonify({"error": "Le nom et la catégorie sont requis"}), 400
+        new_dish = Dish(name=data['name'], category=data['category'], restaurant_id=restaurant_id)
+        db.session.add(new_dish)
+        db.session.commit()
+        return jsonify({"id": new_dish.id, "name": new_dish.name, "category": new_dish.category}), 201
+
+@app.route('/api/menu/<int:dish_id>', methods=['DELETE'])
+@jwt_required()
+def delete_dish(dish_id):
+    restaurant_id = get_restaurant_id_from_token()
+    dish = Dish.query.filter_by(id=dish_id, restaurant_id=restaurant_id).first_or_404()
+    db.session.delete(dish)
+    db.session.commit()
+    return '', 204
+
+if __name__ == '__main__':
+    app.run(debug=True)
