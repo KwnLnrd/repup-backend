@@ -102,14 +102,13 @@ class Restaurant(db.Model):
     user = db.relationship('User', back_populates='restaurant', cascade="all, delete-orphan")
     servers = db.relationship('Server', back_populates='restaurant', cascade="all, delete-orphan")
     dishes = db.relationship('Dish', back_populates='restaurant', cascade="all, delete-orphan")
-    # MODIFIÉ: Relation vers les sélections de tags
     tag_selections = db.relationship('RestaurantTag', back_populates='restaurant', cascade="all, delete-orphan")
+    reviews = db.relationship('Review', back_populates='restaurant', cascade="all, delete-orphan") # Ajout de la relation
 
-# MODÈLE POUR LES SÉLECTIONS DE TAGS PAR RESTAURANT
 class RestaurantTag(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
-    tag_key = db.Column(db.String(100), nullable=False, index=True) # Ex: 'service_attentive'
+    tag_key = db.Column(db.String(100), nullable=False, index=True) 
     restaurant = db.relationship('Restaurant', back_populates='tag_selections')
 
 class Server(db.Model):
@@ -125,6 +124,19 @@ class Dish(db.Model):
     category = db.Column(db.String(50), nullable=False)
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
     restaurant = db.relationship('Restaurant', back_populates='dishes')
+
+# NOUVEAU MODÈLE: Review
+class Review(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
+    source = db.Column(db.String(20), nullable=False) # 'google', 'tripadvisor', 'internal'
+    author_name = db.Column(db.String(100))
+    rating = db.Column(db.Float, nullable=False)
+    content = db.Column(db.Text)
+    review_date = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    restaurant = db.relationship('Restaurant', back_populates='reviews')
+
 
 with app.app_context():
     db.create_all()
@@ -164,7 +176,6 @@ def register():
 
     new_restaurant.slug = generate_unique_slug(restaurant_name, new_restaurant.id)
 
-    # MODIFIÉ: Ajout des tags par défaut à la création du restaurant
     default_tag_keys = [tag['key'] for category in PRE_TRANSLATED_TAGS for tag in PRE_TRANSLATED_TAGS[category]]
     for key in default_tag_keys:
         db.session.add(RestaurantTag(restaurant_id=new_restaurant.id, tag_key=key))
@@ -190,7 +201,6 @@ def get_restaurant_public_data(slug):
     restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
     servers = Server.query.filter_by(restaurant_id=restaurant.id).all()
     
-    # MODIFIÉ: Récupération des tags sélectionnés et de leurs traductions
     selected_tag_keys = {tag.tag_key for tag in restaurant.tag_selections}
     
     tags_for_frontend = {}
@@ -198,7 +208,6 @@ def get_restaurant_public_data(slug):
         tags_for_frontend[category] = []
         for tag_data in tags_list:
             if tag_data['key'] in selected_tag_keys:
-                # On ne renvoie que les traductions des langues activées
                 translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in restaurant.enabled_languages}
                 tags_for_frontend[category].append({
                     "key": tag_data['key'],
@@ -292,7 +301,6 @@ def manage_restaurant_settings():
         db.session.commit()
         return jsonify({"message": "Paramètres mis à jour", "logoUrl": restaurant.logo_url})
 
-# MODIFIÉ: Nouvelle gestion des options (tags)
 @app.route('/api/options', methods=['GET', 'POST'])
 @jwt_required()
 def manage_options():
@@ -309,10 +317,8 @@ def manage_options():
         data = request.get_json()
         new_selected_keys = data.get('selected_keys', [])
         
-        # Supprimer les anciennes sélections
         RestaurantTag.query.filter_by(restaurant_id=restaurant_id).delete()
         
-        # Ajouter les nouvelles sélections
         for key in new_selected_keys:
             db.session.add(RestaurantTag(restaurant_id=restaurant_id, tag_key=key))
             
@@ -391,11 +397,4 @@ def manage_single_dish(dish_id):
         dish.name = data.get('name', dish.name)
         dish.category = data.get('category', dish.category)
         db.session.commit()
-        return jsonify({"id": dish.id, "name": dish.name, "category": dish.category})
-    if request.method == 'DELETE':
-        db.session.delete(dish)
-        db.session.commit()
-        return '', 204
-
-if __name__ == '__main__':
-    app.run(debug=True)
+        return jsonify({"id": d
