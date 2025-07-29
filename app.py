@@ -17,7 +17,6 @@ load_dotenv()
 app = Flask(__name__)
 
 # --- CONFIGURATION DU DOSSIER DE TÉLÉVERSEMENT ---
-# CORRECTION : Utiliser un chemin absolu pour le disque persistant de Render
 UPLOAD_FOLDER = '/var/data/uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
@@ -53,6 +52,36 @@ app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 
+
+# --- LISTE MAÎTRESSE DES TAGS PRÉ-TRADUITS ---
+PRE_TRANSLATED_TAGS = {
+    'service': [
+        {'key': 'service_attentive', 'fr': 'Attentionné', 'en': 'Attentive', 'es': 'Atento'},
+        {'key': 'service_smiling', 'fr': 'Souriant', 'en': 'Smiling', 'es': 'Sonriente'},
+        {'key': 'service_professional', 'fr': 'Professionnel', 'en': 'Professional', 'es': 'Profesional'},
+        {'key': 'service_efficient', 'fr': 'Efficace', 'en': 'Efficient', 'es': 'Eficiente'},
+        {'key': 'service_good_advice', 'fr': 'De bon conseil', 'en': 'Good advice', 'es': 'Buen consejo'},
+        {'key': 'service_discreet', 'fr': 'Discret', 'en': 'Discreet', 'es': 'Discreto'},
+    ],
+    'occasion': [
+        {'key': 'occasion_birthday', 'fr': 'Anniversaire', 'en': 'Birthday', 'es': 'Cumpleaños'},
+        {'key': 'occasion_romantic', 'fr': 'Dîner romantique', 'en': 'Romantic dinner', 'es': 'Cena romántica'},
+        {'key': 'occasion_friends', 'fr': 'Entre amis', 'en': 'With friends', 'es': 'Con amigos'},
+        {'key': 'occasion_family', 'fr': 'En famille', 'en': 'With family', 'es': 'En familia'},
+        {'key': 'occasion_business', 'fr': 'Affaires', 'en': 'Business', 'es': 'Negocios'},
+        {'key': 'occasion_visit', 'fr': 'Simple visite', 'en': 'Just visiting', 'es': 'Simple visita'},
+    ],
+    'atmosphere': [
+        {'key': 'atmosphere_decoration', 'fr': 'La Décoration', 'en': 'The Decoration', 'es': 'La Decoración'},
+        {'key': 'atmosphere_music', 'fr': 'La Musique', 'en': 'The Music', 'es': 'La Música'},
+        {'key': 'atmosphere_festive', 'fr': 'L\'Énergie Festive', 'en': 'The Festive Energy', 'es': 'La Energía Festiva'},
+        {'key': 'atmosphere_lighting', 'fr': 'L\'Éclairage', 'en': 'The Lighting', 'es': 'La Iluminación'},
+        {'key': 'atmosphere_comfort', 'fr': 'Le Confort', 'en': 'The Comfort', 'es': 'La Comodidad'},
+        {'key': 'atmosphere_romantic', 'fr': 'Romantique', 'en': 'Romantic', 'es': 'Romántico'},
+    ]
+}
+
+
 # --- MODÈLES DE LA BASE DE DONNÉES ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -73,7 +102,15 @@ class Restaurant(db.Model):
     user = db.relationship('User', back_populates='restaurant', cascade="all, delete-orphan")
     servers = db.relationship('Server', back_populates='restaurant', cascade="all, delete-orphan")
     dishes = db.relationship('Dish', back_populates='restaurant', cascade="all, delete-orphan")
-    custom_tags = db.relationship('CustomTag', back_populates='restaurant', cascade="all, delete-orphan")
+    # MODIFIÉ: Relation vers les sélections de tags
+    tag_selections = db.relationship('RestaurantTag', back_populates='restaurant', cascade="all, delete-orphan")
+
+# MODÈLE POUR LES SÉLECTIONS DE TAGS PAR RESTAURANT
+class RestaurantTag(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
+    tag_key = db.Column(db.String(100), nullable=False, index=True) # Ex: 'service_attentive'
+    restaurant = db.relationship('Restaurant', back_populates='tag_selections')
 
 class Server(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -89,18 +126,10 @@ class Dish(db.Model):
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
     restaurant = db.relationship('Restaurant', back_populates='dishes')
 
-class CustomTag(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    category = db.Column(db.String(50), nullable=False, index=True) 
-    text = db.Column(db.String(100), nullable=False)
-    restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
-    restaurant = db.relationship('Restaurant', back_populates='custom_tags')
-
 with app.app_context():
     db.create_all()
 
 # --- GESTION DE L'UTILISATEUR JWT ---
-
 @jwt.user_lookup_loader
 def user_lookup_callback(_jwt_header, jwt_data):
     identity = jwt_data["sub"]
@@ -118,7 +147,6 @@ def generate_unique_slug(name, restaurant_id):
     return f"{base_slug}-{restaurant_id}"
 
 # --- ROUTES PUBLIQUES ---
-
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
@@ -136,21 +164,16 @@ def register():
 
     new_restaurant.slug = generate_unique_slug(restaurant_name, new_restaurant.id)
 
-    default_tags = {
-        'service': ["Attentionné", "Souriant", "Professionnel", "Efficace", "De bon conseil", "Discret"],
-        'occasion': ["Anniversaire", "Dîner romantique", "Entre amis", "En famille", "Affaires", "Simple visite"],
-        'atmosphere': ["La Décoration", "La Musique", "L'Énergie Festive", "L'Éclairage", "Le Confort", "Romantique"]
-    }
-    for category, texts in default_tags.items():
-        for text in texts:
-            db.session.add(CustomTag(category=category, text=text, restaurant_id=new_restaurant.id))
+    # MODIFIÉ: Ajout des tags par défaut à la création du restaurant
+    default_tag_keys = [tag['key'] for category in PRE_TRANSLATED_TAGS for tag in PRE_TRANSLATED_TAGS[category]]
+    for key in default_tag_keys:
+        db.session.add(RestaurantTag(restaurant_id=new_restaurant.id, tag_key=key))
     
     hashed_password = generate_password_hash(password)
     new_user = User(email=email, password_hash=hashed_password, restaurant_id=new_restaurant.id)
     db.session.add(new_user)
     db.session.commit()
     return jsonify({"message": "Compte créé avec succès"}), 201
-
 
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -166,20 +189,28 @@ def login():
 def get_restaurant_public_data(slug):
     restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
     servers = Server.query.filter_by(restaurant_id=restaurant.id).all()
-    tags = CustomTag.query.filter_by(restaurant_id=restaurant.id).all()
     
-    custom_tags_by_category = {}
-    for tag in tags:
-        if tag.category not in custom_tags_by_category:
-            custom_tags_by_category[tag.category] = []
-        custom_tags_by_category[tag.category].append({"id": tag.id, "text": tag.text})
+    # MODIFIÉ: Récupération des tags sélectionnés et de leurs traductions
+    selected_tag_keys = {tag.tag_key for tag in restaurant.tag_selections}
+    
+    tags_for_frontend = {}
+    for category, tags_list in PRE_TRANSLATED_TAGS.items():
+        tags_for_frontend[category] = []
+        for tag_data in tags_list:
+            if tag_data['key'] in selected_tag_keys:
+                # On ne renvoie que les traductions des langues activées
+                translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in restaurant.enabled_languages}
+                tags_for_frontend[category].append({
+                    "key": tag_data['key'],
+                    "translations": translations
+                })
 
     return jsonify({
         "name": restaurant.name, "logoUrl": restaurant.logo_url, "primaryColor": restaurant.primary_color,
         "links": {"google": restaurant.google_link, "tripadvisor": restaurant.tripadvisor_link},
         "servers": [{"id": s.id, "name": s.name, "avatar": s.avatar_url} for s in servers],
         "languages": restaurant.enabled_languages,
-        "tags": custom_tags_by_category
+        "tags": tags_for_frontend
     })
 
 @app.route('/api/public/menu/<string:slug>', methods=['GET'])
@@ -261,38 +292,32 @@ def manage_restaurant_settings():
         db.session.commit()
         return jsonify({"message": "Paramètres mis à jour", "logoUrl": restaurant.logo_url})
 
-@app.route('/api/tags', methods=['GET', 'POST'])
+# MODIFIÉ: Nouvelle gestion des options (tags)
+@app.route('/api/options', methods=['GET', 'POST'])
 @jwt_required()
-def manage_tags():
+def manage_options():
     restaurant_id = get_restaurant_id_from_token()
     if request.method == 'GET':
-        tags = CustomTag.query.filter_by(restaurant_id=restaurant_id).order_by(CustomTag.category, CustomTag.id).all()
-        tags_by_category = {}
-        for tag in tags:
-            if tag.category not in tags_by_category: tags_by_category[tag.category] = []
-            tags_by_category[tag.category].append({"id": tag.id, "text": tag.text})
-        return jsonify(tags_by_category)
+        selected_tags = db.session.query(RestaurantTag.tag_key).filter_by(restaurant_id=restaurant_id).all()
+        selected_keys = [key for (key,) in selected_tags]
+        return jsonify({
+            "available_tags": PRE_TRANSLATED_TAGS,
+            "selected_keys": selected_keys
+        })
+    
     if request.method == 'POST':
         data = request.get_json()
-        new_tag = CustomTag(text=data['text'], category=data['category'], restaurant_id=restaurant_id)
-        db.session.add(new_tag)
+        new_selected_keys = data.get('selected_keys', [])
+        
+        # Supprimer les anciennes sélections
+        RestaurantTag.query.filter_by(restaurant_id=restaurant_id).delete()
+        
+        # Ajouter les nouvelles sélections
+        for key in new_selected_keys:
+            db.session.add(RestaurantTag(restaurant_id=restaurant_id, tag_key=key))
+            
         db.session.commit()
-        return jsonify({"id": new_tag.id, "text": new_tag.text}), 201
-
-@app.route('/api/tags/<int:tag_id>', methods=['PUT', 'DELETE'])
-@jwt_required()
-def manage_single_tag(tag_id):
-    restaurant_id = get_restaurant_id_from_token()
-    tag = CustomTag.query.filter_by(id=tag_id, restaurant_id=restaurant_id).first_or_404()
-    if request.method == 'PUT':
-        data = request.get_json()
-        tag.text = data.get('text', tag.text)
-        db.session.commit()
-        return jsonify({"id": tag.id, "text": tag.text})
-    if request.method == 'DELETE':
-        db.session.delete(tag)
-        db.session.commit()
-        return '', 204
+        return jsonify({"message": "Options mises à jour avec succès."}), 200
 
 @app.route('/api/servers', methods=['GET', 'POST'])
 @jwt_required()
