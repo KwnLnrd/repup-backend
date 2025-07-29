@@ -17,8 +17,7 @@ load_dotenv()
 app = Flask(__name__)
 
 # --- CONFIGURATION DU DOSSIER DE TÉLÉVERSEMENT ---
-# FIX: Use a relative path for the upload folder to ensure compatibility with hosting platforms.
-UPLOAD_FOLDER = 'uploads'
+UPLOAD_FOLDER = '/var/data/uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
@@ -116,7 +115,6 @@ class Restaurant(db.Model):
     servers = db.relationship('Server', back_populates='restaurant', cascade="all, delete-orphan")
     dishes = db.relationship('Dish', back_populates='restaurant', cascade="all, delete-orphan")
     tag_selections = db.relationship('RestaurantTag', back_populates='restaurant', cascade="all, delete-orphan")
-    generated_reviews = db.relationship('GeneratedReview', back_populates='restaurant', cascade="all, delete-orphan")
 
 class RestaurantTag(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -137,20 +135,6 @@ class Dish(db.Model):
     category = db.Column(db.String(50), nullable=False)
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
     restaurant = db.relationship('Restaurant', back_populates='dishes')
-
-class GeneratedReview(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    language = db.Column(db.String(10))
-    server_name = db.Column(db.String(100), nullable=True)
-    occasion = db.Column(db.String(100), nullable=True)
-    service_qualities = db.Column(db.JSON, nullable=True)
-    flavors = db.Column(db.JSON, nullable=True)
-    atmosphere = db.Column(db.JSON, nullable=True)
-    review_text = db.Column(db.Text, nullable=False)
-    private_feedback = db.Column(db.Text, nullable=True)
-    restaurant = db.relationship('Restaurant', back_populates='generated_reviews')
 
 with app.app_context():
     db.create_all()
@@ -222,22 +206,17 @@ def get_restaurant_public_data(slug):
         tags_for_frontend[category] = []
         for tag_data in tags_list:
             if tag_data['key'] in selected_tag_keys:
-                # FIX: Ensure enabled_languages is a non-empty list
-                enabled_languages = restaurant.enabled_languages if restaurant.enabled_languages else ['fr']
-                translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in enabled_languages}
+                translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in restaurant.enabled_languages}
                 tags_for_frontend[category].append({
                     "key": tag_data['key'],
                     "translations": translations
                 })
 
-    # FIX: Ensure enabled_languages sent to frontend is never null or empty
-    final_enabled_languages = restaurant.enabled_languages if restaurant.enabled_languages else ['fr']
-
     return jsonify({
         "name": restaurant.name, "logoUrl": restaurant.logo_url, "primaryColor": restaurant.primary_color,
         "links": {"google": restaurant.google_link, "tripadvisor": restaurant.tripadvisor_link},
         "servers": [{"id": s.id, "name": s.name, "avatar": s.avatar_url} for s in servers],
-        "languages": final_enabled_languages,
+        "languages": restaurant.enabled_languages,
         "tags": tags_for_frontend
     })
 
@@ -253,57 +232,33 @@ def get_public_menu(slug):
         menu_by_category[dish.category].append({"id": dish.id, "name": dish.name})
     return jsonify(menu_by_category)
 
-@app.route('/api/public/review/generate/<string:slug>', methods=['POST'])
-def generate_and_save_review(slug):
-    restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
+@app.route('/api/generate-review', methods=['POST'])
+def generate_review_proxy():
     api_key = os.getenv('OPENAI_API_KEY')
     if not api_key:
         return jsonify({"error": "La clé API OpenAI n'est pas configurée sur le serveur."}), 500
-
     data = request.get_json()
     prompt = data.get('prompt')
-    review_data = data.get('reviewData', {})
-
     if not prompt:
         return jsonify({"error": "Le prompt est manquant."}), 400
-
     openai_url = 'https://api.openai.com/v1/chat/completions'
     headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
     payload = {
         "model": "gpt-3.5-turbo",
         "messages": [{"role": "system", "content": "Tu es un assistant IA qui rédige des avis de restaurant positifs et engageants."}, {"role": "user", "content": prompt}]
     }
-    
     try:
         response = requests.post(openai_url, headers=headers, json=payload)
         response.raise_for_status()
         openai_data = response.json()
         review_text = openai_data['choices'][0]['message']['content'].strip()
-
-        # Sauvegarde de l'avis en base de données
-        new_review = GeneratedReview(
-            restaurant_id=restaurant.id,
-            language=review_data.get('lang'),
-            server_name=review_data.get('server'),
-            occasion=review_data.get('occasion'),
-            service_qualities=review_data.get('serviceQualities'),
-            flavors=review_data.get('flavors'),
-            atmosphere=review_data.get('atmosphere'),
-            private_feedback=review_data.get('privateFeedback'),
-            review_text=review_text
-        )
-        db.session.add(new_review)
-        db.session.commit()
-
         return jsonify({"review": review_text})
-
     except requests.exceptions.RequestException as e:
         app.logger.error(f"Erreur lors de l'appel à l'API OpenAI: {e}")
         return jsonify({"error": f"Erreur de communication avec l'API OpenAI: {e}"}), 502
     except (KeyError, IndexError) as e:
         app.logger.error(f"Réponse inattendue de l'API OpenAI: {openai_data}")
         return jsonify({"error": "Format de réponse inattendu de la part d'OpenAI."}), 500
-
 
 # --- ROUTES PROTÉGÉES ---
 
@@ -330,14 +285,8 @@ def manage_restaurant_settings():
         
         if 'enabledLanguages' in data:
             try:
-                langs = json.loads(data.get('enabledLanguages'))
-                # Ensure it's a list and not empty
-                if isinstance(langs, list) and langs:
-                    restaurant.enabled_languages = langs
-                else:
-                    # Fallback to default if an empty list is provided
-                    restaurant.enabled_languages = ['fr']
-            except (json.JSONDecodeError, TypeError):
+                restaurant.enabled_languages = json.loads(data.get('enabledLanguages'))
+            except json.JSONDecodeError:
                 return jsonify({"error": "Format JSON invalide pour les langues"}), 400
 
         if 'logo' in request.files:
@@ -451,56 +400,6 @@ def manage_single_dish(dish_id):
         db.session.delete(dish)
         db.session.commit()
         return '', 204
-
-@app.route('/api/reviews', methods=['GET'])
-@jwt_required()
-def get_reviews():
-    restaurant_id = get_restaurant_id_from_token()
-    reviews = GeneratedReview.query.filter_by(restaurant_id=restaurant_id).order_by(GeneratedReview.created_at.desc()).all()
-    return jsonify([{
-        "id": r.id,
-        "review_text": r.review_text,
-        "created_at": r.created_at.isoformat()
-    } for r in reviews])
-
-@app.route('/api/reviews/analyze', methods=['POST'])
-@jwt_required()
-def analyze_reviews():
-    restaurant_id = get_restaurant_id_from_token()
-    reviews = GeneratedReview.query.filter_by(restaurant_id=restaurant_id).all()
-
-    if not reviews:
-        return jsonify({"analysis": "Pas assez d'avis pour générer une analyse."})
-
-    reviews_text = "\n\n---\n\n".join([r.review_text for r in reviews])
-    
-    prompt = f"""Voici une liste d'avis pour mon restaurant. Analyse-les pour identifier les points forts récurrents, les points faibles ou les critiques fréquentes, et propose 3 suggestions concrètes d'amélioration pour mon restaurant. Fournis une réponse structurée en Markdown avec les titres : 'Points Forts', 'Points Faibles', 'Suggestions'.
-
-AVIS :
-{reviews_text}
-"""
-
-    api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key:
-        return jsonify({"error": "La clé API OpenAI n'est pas configurée sur le serveur."}), 500
-
-    openai_url = 'https://api.openai.com/v1/chat/completions'
-    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
-    payload = {
-        "model": "gpt-4o",
-        "messages": [{"role": "user", "content": prompt}]
-    }
-
-    try:
-        response = requests.post(openai_url, headers=headers, json=payload)
-        response.raise_for_status()
-        openai_data = response.json()
-        analysis_text = openai_data['choices'][0]['message']['content'].strip()
-        return jsonify({"analysis": analysis_text})
-    except Exception as e:
-        app.logger.error(f"Erreur lors de l'analyse OpenAI: {e}")
-        return jsonify({"error": "Erreur lors de la génération de l'analyse."}), 500
-
 
 if __name__ == '__main__':
     app.run(debug=True)
