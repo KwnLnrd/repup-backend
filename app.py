@@ -221,7 +221,9 @@ def get_restaurant_public_data(slug):
         tags_for_frontend[category] = []
         for tag_data in tags_list:
             if tag_data['key'] in selected_tag_keys:
-                translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in restaurant.enabled_languages}
+                # CORRECTION : S'assurer que enabled_languages est une liste avant de l'utiliser
+                enabled_languages = restaurant.enabled_languages if restaurant.enabled_languages is not None else ['fr', 'en']
+                translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in enabled_languages}
                 tags_for_frontend[category].append({
                     "key": tag_data['key'],
                     "translations": translations
