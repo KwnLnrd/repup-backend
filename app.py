@@ -16,7 +16,6 @@ load_dotenv()
 app = Flask(__name__)
 
 # --- CONFIGURATION DU DOSSIER DE TÉLÉVERSEMENT (POUR DISQUE PERSISTANT) ---
-# Ce chemin est le standard pour les disques persistants sur Render.
 UPLOAD_FOLDER = '/var/data/uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
@@ -29,9 +28,8 @@ handler.setLevel(logging.INFO)
 app.logger.addHandler(handler)
 
 # --- CORS CONFIGURATION ---
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://repup-avis.netlify.app")
 CORS(app, 
-     origins=[FRONTEND_URL, "http://127.0.0.1:5500", "http://127.0.0.1:5501", "https://saas-review-collection-page-fixed.netlify.app"],
+     origins=["*"], # Temporairement ouvert pour le débogage, à restreindre en production
      supports_credentials=True,
      allow_headers=["Authorization", "Content-Type"]
 )
@@ -55,22 +53,6 @@ app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
-
-# --- JWT ERROR HANDLERS ---
-@jwt.invalid_token_loader
-def invalid_token_callback(error):
-    app.logger.error(f"Invalid token error: {error}")
-    return jsonify({"message": "Le token est invalide.", "error": "invalid_token"}), 422
-
-@jwt.expired_token_loader
-def expired_token_callback(jwt_header, jwt_payload):
-    app.logger.warning("Expired token received.")
-    return jsonify({"message": "Le token a expiré.", "error": "token_expired"}), 401
-
-@jwt.unauthorized_loader
-def missing_token_callback(reason):
-    app.logger.warning(f"Missing token: {reason}")
-    return jsonify({"message": "Token d'authentification manquant.", "error": "authorization_required"}), 401
 
 # --- MODÈLES DE LA BASE DE DONNÉES ---
 class User(db.Model):
@@ -106,13 +88,6 @@ class Dish(db.Model):
     category = db.Column(db.String(50), nullable=False)
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
     restaurant = db.relationship('Restaurant', back_populates='dishes')
-
-# Le bloc suivant est commenté pour améliorer la stabilité au démarrage.
-# Il tente de créer les tables de la base de données à chaque lancement, ce qui peut
-# provoquer des plantages si la base de données n'est pas immédiatement disponible.
-# Les tables devraient déjà exister après une première exécution réussie.
-# with app.app_context():
-#     db.create_all()
 
 def get_restaurant_id_from_token():
     return get_jwt()["restaurant_id"]
@@ -182,6 +157,18 @@ def get_restaurant_public_data(slug):
         "servers": [{"id": s.id, "name": s.name, "avatar": s.avatar_url} for s in servers],
         "languages": restaurant.enabled_languages
     })
+
+# NOUVELLE ROUTE PUBLIQUE POUR LE MENU
+@app.route('/api/public/menu/<string:slug>', methods=['GET'])
+def get_public_menu(slug):
+    restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
+    dishes = Dish.query.filter_by(restaurant_id=restaurant.id).order_by(Dish.category, Dish.name).all()
+    menu = {}
+    for dish in dishes:
+        if dish.category not in menu:
+            menu[dish.category] = []
+        menu[dish.category].append({"id": dish.id, "name": dish.name})
+    return jsonify(menu)
 
 @app.route('/api/restaurant', methods=['GET', 'PUT'])
 @jwt_required()
