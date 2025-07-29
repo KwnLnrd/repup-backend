@@ -18,8 +18,9 @@ app = Flask(__name__)
 # --- CONFIGURATION DU DOSSIER DE TÉLÉVERSEMENT (POUR DISQUE PERSISTANT) ---
 # Ce chemin est le standard pour les disques persistants sur Render.
 UPLOAD_FOLDER = '/var/data/uploads'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
 
 # --- LOGGING CONFIGURATION ---
 app.logger.setLevel(logging.INFO)
@@ -30,7 +31,7 @@ app.logger.addHandler(handler)
 # --- CORS CONFIGURATION ---
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://repup-avis.netlify.app")
 CORS(app, 
-     origins=[FRONTEND_URL, "http://127.0.0.1:5500", "http://127.0.0.1:5501"],
+     origins=[FRONTEND_URL, "http://127.0.0.1:5500", "http://127.0.0.1:5501", "https://saas-review-collection-page-fixed.netlify.app"],
      supports_credentials=True,
      allow_headers=["Authorization", "Content-Type"]
 )
@@ -85,7 +86,6 @@ class Restaurant(db.Model):
     slug = db.Column(db.String(100), unique=True, nullable=False, index=True)
     logo_url = db.Column(db.Text, nullable=True)
     primary_color = db.Column(db.String(7), default='#BF5B3F')
-    # Utilisation de db.Text pour autoriser des URL très longues
     google_link = db.Column(db.Text, nullable=True)
     tripadvisor_link = db.Column(db.Text, nullable=True)
     enabled_languages = db.Column(db.JSON, default=['fr', 'en'])
@@ -206,4 +206,74 @@ def manage_restaurant_settings():
 def manage_servers():
     restaurant_id = get_restaurant_id_from_token()
     if request.method == 'GET':
-        servers = Server.query.filter_by(restaur
+        servers = Server.query.filter_by(restaurant_id=restaurant_id).order_by(Server.name).all()
+        return jsonify([{"id": s.id, "name": s.name, "reviews": 0} for s in servers])
+    elif request.method == 'POST':
+        data = request.get_json()
+        new_server = Server(name=data['name'], restaurant_id=restaurant_id)
+        db.session.add(new_server)
+        db.session.commit()
+        return jsonify({"id": new_server.id, "name": new_server.name}), 201
+    return jsonify({"error": "Méthode non autorisée"}), 405
+
+@app.route('/api/servers/<int:server_id>', methods=['PUT', 'DELETE'])
+@jwt_required()
+def handle_server(server_id):
+    restaurant_id = get_restaurant_id_from_token()
+    server = Server.query.filter_by(id=server_id, restaurant_id=restaurant_id).first_or_404()
+    if request.method == 'PUT':
+        data = request.get_json()
+        server.name = data.get('name', server.name)
+        db.session.commit()
+        return jsonify({"id": server.id, "name": server.name})
+    elif request.method == 'DELETE':
+        db.session.delete(server)
+        db.session.commit()
+        return jsonify({"message": "Serveur supprimé"})
+    return jsonify({"error": "Méthode non autorisée"}), 405
+
+@app.route('/api/menu-items', methods=['GET'])
+@jwt_required()
+def get_menu_items():
+    restaurant_id = get_restaurant_id_from_token()
+    dishes = Dish.query.filter_by(restaurant_id=restaurant_id).order_by(Dish.category, Dish.name).all()
+    menu = {}
+    for dish in dishes:
+        if dish.category not in menu: menu[dish.category] = []
+        menu[dish.category].append({"id": dish.id, "name": dish.name})
+    return jsonify(menu)
+
+@app.route('/api/dishes', methods=['POST'])
+@jwt_required()
+def add_dish():
+    restaurant_id = get_restaurant_id_from_token()
+    data = request.get_json()
+    new_dish = Dish(name=data['name'], category=data['category'], restaurant_id=restaurant_id)
+    db.session.add(new_dish)
+    db.session.commit()
+    return jsonify({"id": new_dish.id, "name": new_dish.name, "category": new_dish.category}), 201
+
+@app.route('/api/dishes/<int:dish_id>', methods=['PUT', 'DELETE'])
+@jwt_required()
+def handle_dish(dish_id):
+    restaurant_id = get_restaurant_id_from_token()
+    dish = Dish.query.filter_by(id=dish_id, restaurant_id=restaurant_id).first_or_404()
+    if request.method == 'PUT':
+        data = request.get_json()
+        dish.name = data.get('name', dish.name)
+        dish.category = data.get('category', dish.category)
+        db.session.commit()
+        return jsonify({"id": dish.id, "name": dish.name, "category": dish.category})
+    elif request.method == 'DELETE':
+        db.session.delete(dish)
+        db.session.commit()
+        return jsonify({"message": "Plat supprimé"})
+    return jsonify({"error": "Méthode non autorisée"}), 405
+
+@app.route('/')
+def index():
+    return jsonify({"status": "API is running"}), 200
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5001))
+    app.run(host='0.0.0.0', port=port, debug=True)
