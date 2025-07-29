@@ -1,4 +1,5 @@
 import os
+import re
 import traceback
 import logging
 from flask import Flask, request, jsonify, send_from_directory
@@ -84,17 +85,23 @@ class Dish(db.Model):
 
 class CustomTag(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    category = db.Column(db.String(50), nullable=False, index=True) # Ex: 'service', 'occasion', 'atmosphere'
+    category = db.Column(db.String(50), nullable=False, index=True) 
     text = db.Column(db.String(100), nullable=False)
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
     restaurant = db.relationship('Restaurant', back_populates='custom_tags')
 
-# --- CRÉATION DES TABLES DE LA BASE DE DONNÉES ---
 with app.app_context():
     db.create_all()
 
 def get_restaurant_id_from_token():
     return get_jwt()["restaurant_id"]
+
+def generate_unique_slug(name, restaurant_id):
+    """Génère un slug unique à partir d'un nom."""
+    base_slug = name.lower().replace(' ', '-')
+    # Supprime les caractères non alphanumériques sauf les tirets
+    base_slug = re.sub(r'[^a-z0-9-]', '', base_slug)
+    return f"{base_slug}-{restaurant_id}"
 
 # --- ROUTES ---
 
@@ -108,10 +115,14 @@ def register():
     email, password, restaurant_name = data.get('email'), data.get('password'), data.get('restaurant_name')
     if not all([email, password, restaurant_name]): return jsonify({"error": "Données manquantes"}), 400
     if User.query.filter_by(email=email).first(): return jsonify({"error": "Cet email est déjà utilisé"}), 409
-    slug = restaurant_name.lower().replace(' ', '-') + '-' + str(db.session.query(Restaurant).count() + 1)
-    new_restaurant = Restaurant(name=restaurant_name, slug=slug)
+    
+    new_restaurant = Restaurant(name=restaurant_name, slug="temporary-slug")
     db.session.add(new_restaurant)
-    db.session.flush()
+    db.session.flush() # Flush pour obtenir l'ID du nouveau restaurant
+
+    # Met à jour le slug avec l'ID pour garantir l'unicité
+    new_restaurant.slug = generate_unique_slug(restaurant_name, new_restaurant.id)
+
     default_tags = {
         'service': ["Attentionné", "Souriant", "Professionnel", "Efficace", "De bon conseil", "Discret"],
         'occasion': ["Anniversaire", "Dîner romantique", "Entre amis", "En famille", "Affaires", "Simple visite"],
@@ -175,16 +186,21 @@ def manage_restaurant_settings():
         })
     elif request.method == 'PUT':
         data = request.get_json()
-        restaurant.name = data.get('name', restaurant.name) # MODIFICATION ICI
+        
+        # Vérifie si le nom du restaurant a changé
+        new_name = data.get('name')
+        if new_name and new_name != restaurant.name:
+            restaurant.name = new_name
+            # Met à jour le slug si le nom change
+            restaurant.slug = generate_unique_slug(new_name, restaurant.id)
+
         restaurant.primary_color = data.get('primaryColor', restaurant.primary_color)
         restaurant.google_link = data.get('googleLink', restaurant.google_link)
         restaurant.tripadvisor_link = data.get('tripadvisorLink', restaurant.tripadvisor_link)
         restaurant.enabled_languages = data.get('enabledLanguages', restaurant.enabled_languages)
         db.session.commit()
-        return jsonify({"message": "Paramètres mis à jour"})
-    return jsonify({"error": "Méthode non autorisée"}), 405
+        return jsonify({"message": "Paramètres mis à jour", "newSlug": restaurant.slug})
 
-# ... (le reste du code de app.py reste identique)
 @app.route('/api/tags', methods=['GET', 'POST'])
 @jwt_required()
 def manage_tags():
