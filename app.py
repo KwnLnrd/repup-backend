@@ -89,6 +89,12 @@ class CustomTag(db.Model):
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
     restaurant = db.relationship('Restaurant', back_populates='custom_tags')
 
+# --- CRÉATION DES TABLES DE LA BASE DE DONNÉES ---
+# Cette commande s'assure que toutes les tables définies dans les modèles ci-dessus
+# existent bien dans la base de données au démarrage de l'application.
+with app.app_context():
+    db.create_all()
+
 def get_restaurant_id_from_token():
     return get_jwt()["restaurant_id"]
 
@@ -100,7 +106,6 @@ def uploaded_file(filename):
 
 @app.route('/api/register', methods=['POST'])
 def register():
-    # ... (code inchangé)
     data = request.get_json()
     email, password, restaurant_name = data.get('email'), data.get('password'), data.get('restaurant_name')
     if not all([email, password, restaurant_name]): return jsonify({"error": "Données manquantes"}), 400
@@ -128,7 +133,6 @@ def register():
 
 @app.route('/api/login', methods=['POST'])
 def login():
-    # ... (code inchangé)
     data = request.get_json()
     email, password = data.get('email'), data.get('password')
     user = User.query.filter_by(email=email).first()
@@ -197,8 +201,6 @@ def delete_tag(tag_id):
     db.session.commit()
     return jsonify({"message": "Option supprimée avec succès"})
 
-
-# ... (le reste du code de app.py reste identique)
 @app.route('/api/logo-upload', methods=['POST'])
 @jwt_required()
 def upload_logo():
