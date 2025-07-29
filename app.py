@@ -17,7 +17,8 @@ load_dotenv()
 app = Flask(__name__)
 
 # --- CONFIGURATION DU DOSSIER DE TÉLÉVERSEMENT ---
-UPLOAD_FOLDER = '/var/data/uploads'
+# FIX: Use a relative path for the upload folder to ensure compatibility with hosting platforms.
+UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
