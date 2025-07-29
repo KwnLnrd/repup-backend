@@ -15,26 +15,21 @@ from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_requir
 load_dotenv()
 app = Flask(__name__)
 
-# --- CONFIGURATION DU DOSSIER DE TÉLÉVERSEMENT (POUR DISQUE PERSISTANT) ---
+# --- CONFIGURATION DU DOSSIER DE TÉLÉVERSEMENT ---
 UPLOAD_FOLDER = '/var/data/uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-
-# --- LOGGING CONFIGURATION ---
+# --- LOGGING ---
 app.logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 handler.setLevel(logging.INFO)
 app.logger.addHandler(handler)
 
-# --- CORS CONFIGURATION ---
-CORS(app, 
-     origins=["*"], # Temporairement ouvert pour le débogage, à restreindre en production
-     supports_credentials=True,
-     allow_headers=["Authorization", "Content-Type"]
-)
+# --- CORS ---
+CORS(app, origins=["*"], supports_credentials=True, allow_headers=["Authorization", "Content-Type"])
 
-# --- CONFIGURATION DE LA BASE DE DONNÉES ET JWT ---
+# --- CONFIGURATION BDD & JWT ---
 database_url = os.getenv('DATABASE_URL')
 if not database_url:
     raise RuntimeError("DATABASE_URL is not set.")
@@ -46,9 +41,6 @@ elif database_url.startswith("postgresql://"):
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "une-cle-vraiment-secrete-et-longue-pour-la-prod")
-app.config["JWT_TOKEN_LOCATION"] = ["headers"]
-app.config["JWT_HEADER_NAME"] = "Authorization"
-app.config["JWT_HEADER_TYPE"] = "Bearer"
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 
 db = SQLAlchemy(app)
@@ -74,6 +66,7 @@ class Restaurant(db.Model):
     user = db.relationship('User', back_populates='restaurant', cascade="all, delete-orphan")
     servers = db.relationship('Server', back_populates='restaurant', cascade="all, delete-orphan")
     dishes = db.relationship('Dish', back_populates='restaurant', cascade="all, delete-orphan")
+    custom_tags = db.relationship('CustomTag', back_populates='restaurant', cascade="all, delete-orphan")
 
 class Server(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -89,17 +82,25 @@ class Dish(db.Model):
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
     restaurant = db.relationship('Restaurant', back_populates='dishes')
 
+class CustomTag(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    category = db.Column(db.String(50), nullable=False, index=True) # Ex: 'service', 'occasion', 'atmosphere'
+    text = db.Column(db.String(100), nullable=False)
+    restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
+    restaurant = db.relationship('Restaurant', back_populates='custom_tags')
+
 def get_restaurant_id_from_token():
     return get_jwt()["restaurant_id"]
 
-# --- ROUTES POUR SERVIR LES FICHIERS TÉLÉVERSÉS ---
+# --- ROUTES ---
+
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
-# --- ROUTES API ---
 @app.route('/api/register', methods=['POST'])
 def register():
+    # ... (code inchangé)
     data = request.get_json()
     email, password, restaurant_name = data.get('email'), data.get('password'), data.get('restaurant_name')
     if not all([email, password, restaurant_name]): return jsonify({"error": "Données manquantes"}), 400
@@ -108,14 +109,26 @@ def register():
     new_restaurant = Restaurant(name=restaurant_name, slug=slug)
     db.session.add(new_restaurant)
     db.session.flush()
+    # Ajout des tags par défaut pour le nouveau restaurant
+    default_tags = {
+        'service': ["Attentionné", "Souriant", "Professionnel", "Efficace", "De bon conseil", "Discret"],
+        'occasion': ["Anniversaire", "Dîner romantique", "Entre amis", "En famille", "Affaires", "Simple visite"],
+        'atmosphere': ["La Décoration", "La Musique", "L'Énergie Festive", "L'Éclairage", "Le Confort", "Romantique"]
+    }
+    for category, texts in default_tags.items():
+        for text in texts:
+            db.session.add(CustomTag(category=category, text=text, restaurant_id=new_restaurant.id))
+    
     hashed_password = generate_password_hash(password)
     new_user = User(email=email, password_hash=hashed_password, restaurant_id=new_restaurant.id)
     db.session.add(new_user)
     db.session.commit()
     return jsonify({"message": "Compte créé avec succès"}), 201
 
+
 @app.route('/api/login', methods=['POST'])
 def login():
+    # ... (code inchangé)
     data = request.get_json()
     email, password = data.get('email'), data.get('password')
     user = User.query.filter_by(email=email).first()
@@ -127,6 +140,65 @@ def login():
         return jsonify(access_token=access_token)
     return jsonify({"error": "Identifiants invalides"}), 401
 
+@app.route('/api/public/restaurant/<string:slug>', methods=['GET'])
+def get_restaurant_public_data(slug):
+    restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
+    servers = Server.query.filter_by(restaurant_id=restaurant.id).all()
+    tags = CustomTag.query.filter_by(restaurant_id=restaurant.id).all()
+    
+    custom_tags_by_category = {}
+    for tag in tags:
+        if tag.category not in custom_tags_by_category:
+            custom_tags_by_category[tag.category] = []
+        custom_tags_by_category[tag.category].append({"id": tag.id, "text": tag.text})
+
+    return jsonify({
+        "name": restaurant.name, "logoUrl": restaurant.logo_url, "primaryColor": restaurant.primary_color,
+        "links": {"google": restaurant.google_link, "tripadvisor": restaurant.tripadvisor_link},
+        "servers": [{"id": s.id, "name": s.name, "avatar": s.avatar_url} for s in servers],
+        "languages": restaurant.enabled_languages,
+        "tags": custom_tags_by_category
+    })
+
+# --- NOUVELLES ROUTES POUR LA GESTION DES TAGS ---
+@app.route('/api/tags', methods=['GET', 'POST'])
+@jwt_required()
+def manage_tags():
+    restaurant_id = get_restaurant_id_from_token()
+    if request.method == 'GET':
+        tags = CustomTag.query.filter_by(restaurant_id=restaurant_id).order_by(CustomTag.category, CustomTag.id).all()
+        tags_by_category = {}
+        for tag in tags:
+            if tag.category not in tags_by_category:
+                tags_by_category[tag.category] = []
+            tags_by_category[tag.category].append({"id": tag.id, "text": tag.text})
+        return jsonify(tags_by_category)
+    
+    if request.method == 'POST':
+        data = request.get_json()
+        if not data or 'category' not in data or 'text' not in data:
+            return jsonify({"error": "Données 'category' et 'text' requises"}), 400
+        
+        new_tag = CustomTag(
+            restaurant_id=restaurant_id,
+            category=data['category'],
+            text=data['text']
+        )
+        db.session.add(new_tag)
+        db.session.commit()
+        return jsonify({"id": new_tag.id, "category": new_tag.category, "text": new_tag.text}), 201
+
+@app.route('/api/tags/<int:tag_id>', methods=['DELETE'])
+@jwt_required()
+def delete_tag(tag_id):
+    restaurant_id = get_restaurant_id_from_token()
+    tag = CustomTag.query.filter_by(id=tag_id, restaurant_id=restaurant_id).first_or_404()
+    db.session.delete(tag)
+    db.session.commit()
+    return jsonify({"message": "Option supprimée avec succès"})
+
+
+# ... (le reste du code de app.py reste identique)
 @app.route('/api/logo-upload', methods=['POST'])
 @jwt_required()
 def upload_logo():
@@ -147,18 +219,6 @@ def upload_logo():
         return jsonify({"message": "Logo téléversé avec succès", "logoUrl": logo_url}), 200
     return jsonify({"error": "Une erreur est survenue"}), 500
 
-@app.route('/api/public/restaurant/<string:slug>', methods=['GET'])
-def get_restaurant_public_data(slug):
-    restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
-    servers = Server.query.filter_by(restaurant_id=restaurant.id).all()
-    return jsonify({
-        "name": restaurant.name, "logoUrl": restaurant.logo_url, "primaryColor": restaurant.primary_color,
-        "links": {"google": restaurant.google_link, "tripadvisor": restaurant.tripadvisor_link},
-        "servers": [{"id": s.id, "name": s.name, "avatar": s.avatar_url} for s in servers],
-        "languages": restaurant.enabled_languages
-    })
-
-# NOUVELLE ROUTE PUBLIQUE POUR LE MENU
 @app.route('/api/public/menu/<string:slug>', methods=['GET'])
 def get_public_menu(slug):
     restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
