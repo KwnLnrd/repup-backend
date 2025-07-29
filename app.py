@@ -195,7 +195,8 @@ def scrape_reviews_with_apify(actor_id, target_urls):
         }
         
         app.logger.info(f"Lancement de l'Actor Apify '{actor_id}' pour les URLs: {target_urls}")
-        run = client.actor(actor_id).call(run_input=run_input, wait_for_finish=120) # Attente max de 2 minutes
+        # CORRECTION: Remplacement de 'wait_for_finish' par 'wait_secs' qui est le paramètre correct
+        run = client.actor(actor_id).call(run_input=run_input, wait_secs=120) 
         
         app.logger.info(f"Récupération des résultats pour le run ID: {run['defaultDatasetId']}")
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
