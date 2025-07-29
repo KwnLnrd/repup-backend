@@ -1,24 +1,23 @@
 import os
 import re
-import traceback
+import json
 import logging
 import requests
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import func, desc, Text
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required, JWTManager, get_jwt
+from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required, JWTManager, get_current_user
 
 # --- CONFIGURATION INITIALE ---
 load_dotenv()
 app = Flask(__name__)
 
 # --- CONFIGURATION DU DOSSIER DE TÉLÉVERSEMENT ---
-UPLOAD_FOLDER = 'uploads' # Utiliser un chemin relatif pour la compatibilité
+UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
@@ -105,15 +104,18 @@ def user_lookup_callback(_jwt_header, jwt_data):
     return User.query.filter_by(id=identity).one_or_none()
 
 def get_restaurant_id_from_token():
-    user = get_jwt_identity()
-    return User.query.get(user).restaurant_id
+    # Utilise get_current_user() qui est la méthode recommandée
+    current_user = get_current_user()
+    if current_user:
+        return current_user.restaurant_id
+    return None
 
 def generate_unique_slug(name, restaurant_id):
     base_slug = name.lower().replace(' ', '-')
     base_slug = re.sub(r'[^a-z0-9-]', '', base_slug)
     return f"{base_slug}-{restaurant_id}"
 
-# --- ROUTES ---
+# --- ROUTES PUBLIQUES ---
 
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
@@ -226,29 +228,37 @@ def manage_restaurant_settings():
     restaurant_id = get_restaurant_id_from_token()
     restaurant = db.session.get(Restaurant, restaurant_id)
     if not restaurant: return jsonify({"error": "Restaurant non trouvé"}), 404
+    
     if request.method == 'GET':
         return jsonify({
             "name": restaurant.name, "slug": restaurant.slug, "logoUrl": restaurant.logo_url,
             "primaryColor": restaurant.primary_color, "googleLink": restaurant.google_link,
             "tripadvisorLink": restaurant.tripadvisor_link, "enabledLanguages": restaurant.enabled_languages
         })
+    
     elif request.method == 'PUT':
         data = request.form
         restaurant.name = data.get('name', restaurant.name)
         restaurant.primary_color = data.get('primaryColor', restaurant.primary_color)
         restaurant.google_link = data.get('googleLink', restaurant.google_link)
         restaurant.tripadvisor_link = data.get('tripadvisorLink', restaurant.tripadvisor_link)
-        restaurant.enabled_languages = request.get_json().get('enabledLanguages', restaurant.enabled_languages)
         
+        if 'enabledLanguages' in data:
+            try:
+                # Les données du formulaire sont des chaînes, il faut parser le JSON
+                restaurant.enabled_languages = json.loads(data.get('enabledLanguages'))
+            except json.JSONDecodeError:
+                return jsonify({"error": "Format JSON invalide pour les langues"}), 400
+
         if 'logo' in request.files:
             file = request.files['logo']
-            if file and allowed_file(file.filename):
-                filename = secure_filename(file.filename)
+            if file and file.filename != '' and allowed_file(file.filename):
+                filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
                 file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
                 restaurant.logo_url = f'/uploads/{filename}'
         
         db.session.commit()
-        return jsonify({"message": "Paramètres mis à jour"})
+        return jsonify({"message": "Paramètres mis à jour", "logoUrl": restaurant.logo_url})
 
 @app.route('/api/tags', methods=['GET', 'POST'])
 @jwt_required()

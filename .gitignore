@@ -1,0 +1,12 @@
+# Fichiers d'environnement
+.env
+
+# Fichiers de cache Python
+__pycache__/
+*.pyc
+
+# Fichiers système macOS
+.DS_Store
+
+# Dossier d'uploads
+uploads/
