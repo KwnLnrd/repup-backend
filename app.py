@@ -53,43 +53,31 @@ db = SQLAlchemy(app)
 jwt = JWTManager(app)
 
 
-# --- LISTE MAÎTRESSE DES TAGS PRÉ-TRADUITS (MISE À JOUR) ---
+# --- LISTE MAÎTRESSE DES TAGS PRÉ-TRADUITS ---
 PRE_TRANSLATED_TAGS = {
     'service': [
-        {'key': 'service_attentive', 'fr': 'Attentionné', 'en': 'Attentive', 'es': 'Atento', 'it': 'Attento', 'pt': 'Atencioso', 'zh': '周到'},
-        {'key': 'service_smiling', 'fr': 'Souriant', 'en': 'Smiling', 'es': 'Sonriente', 'it': 'Sorridente', 'pt': 'Sorridente', 'zh': '微笑'},
-        {'key': 'service_professional', 'fr': 'Professionnel', 'en': 'Professional', 'es': 'Profesional', 'it': 'Professionale', 'pt': 'Profissional', 'zh': '专业的'},
-        {'key': 'service_efficient', 'fr': 'Efficace', 'en': 'Efficient', 'es': 'Eficiente', 'it': 'Efficiente', 'pt': 'Eficiente', 'zh': '高效'},
-        {'key': 'service_good_advice', 'fr': 'De bon conseil', 'en': 'Good advice', 'es': 'Buen consejo', 'it': 'Buon consiglio', 'pt': 'Bons conselhos', 'zh': '好建议'},
-        {'key': 'service_discreet', 'fr': 'Discret', 'en': 'Discreet', 'es': 'Discreto', 'it': 'Discreto', 'pt': 'Discreto', 'zh': '谨慎'},
-        {'key': 'service_warm', 'fr': 'Chaleureux', 'en': 'Warm', 'es': 'Cálido', 'it': 'Caloroso', 'pt': 'Acolhedor', 'zh': '热情'},
-        {'key': 'service_fast', 'fr': 'Rapide', 'en': 'Fast', 'es': 'Rápido', 'it': 'Veloce', 'pt': 'Rápido', 'zh': '快速'},
-        {'key': 'service_patient', 'fr': 'Patient', 'en': 'Patient', 'es': 'Paciente', 'it': 'Paziente', 'pt': 'Paciente', 'zh': '耐心'},
-        {'key': 'service_thoughtful', 'fr': 'Prévenant', 'en': 'Thoughtful', 'es': 'Atento', 'it': 'Premuroso', 'pt': 'Atencioso', 'zh': '体贴'}
+        {'key': 'service_attentive', 'fr': 'Attentionné', 'en': 'Attentive', 'es': 'Atento'},
+        {'key': 'service_smiling', 'fr': 'Souriant', 'en': 'Smiling', 'es': 'Sonriente'},
+        {'key': 'service_professional', 'fr': 'Professionnel', 'en': 'Professional', 'es': 'Profesional'},
+        {'key': 'service_efficient', 'fr': 'Efficace', 'en': 'Efficient', 'es': 'Eficiente'},
+        {'key': 'service_good_advice', 'fr': 'De bon conseil', 'en': 'Good advice', 'es': 'Buen consejo'},
+        {'key': 'service_discreet', 'fr': 'Discret', 'en': 'Discreet', 'es': 'Discreto'},
     ],
     'occasion': [
-        {'key': 'occasion_birthday', 'fr': 'Anniversaire', 'en': 'Birthday', 'es': 'Cumpleaños', 'it': 'Compleanno', 'pt': 'Aniversário', 'zh': '生日'},
-        {'key': 'occasion_romantic', 'fr': 'Dîner romantique', 'en': 'Romantic dinner', 'es': 'Cena romántica', 'it': 'Cena romantica', 'pt': 'Jantar romântico', 'zh': '浪漫晚餐'},
-        {'key': 'occasion_friends', 'fr': 'Entre amis', 'en': 'With friends', 'es': 'Con amigos', 'it': 'Con amici', 'pt': 'Com amigos', 'zh': '与朋友'},
-        {'key': 'occasion_family', 'fr': 'En famille', 'en': 'With family', 'es': 'En familia', 'it': 'In famiglia', 'pt': 'Em família', 'zh': '与家人'},
-        {'key': 'occasion_business', 'fr': 'Affaires', 'en': 'Business', 'es': 'Negocios', 'it': 'Affari', 'pt': 'Negócios', 'zh': '商务'},
-        {'key': 'occasion_visit', 'fr': 'Simple visite', 'en': 'Just visiting', 'es': 'Simple visita', 'it': 'Semplice visita', 'pt': 'Apenas uma visita', 'zh': '随便看看'},
-        {'key': 'occasion_celebration', 'fr': 'Célébration', 'en': 'Celebration', 'es': 'Celebración', 'it': 'Celebrazione', 'pt': 'Celebração', 'zh': '庆祝'},
-        {'key': 'occasion_special_night', 'fr': 'Soirée spéciale', 'en': 'Special night', 'es': 'Noche especial', 'it': 'Serata speciale', 'pt': 'Noite especial', 'zh': '特别的夜晚'},
-        {'key': 'occasion_quick_lunch', 'fr': 'Déjeuner rapide', 'en': 'Quick lunch', 'es': 'Almuerzo rápido', 'it': 'Pranzo veloce', 'pt': 'Almoço rápido', 'zh': '快捷午餐'},
-        {'key': 'occasion_discovery', 'fr': 'Découverte', 'en': 'Discovery', 'es': 'Descubrimiento', 'it': 'Scoperta', 'pt': 'Descoberta', 'zh': '探索'}
+        {'key': 'occasion_birthday', 'fr': 'Anniversaire', 'en': 'Birthday', 'es': 'Cumpleaños'},
+        {'key': 'occasion_romantic', 'fr': 'Dîner romantique', 'en': 'Romantic dinner', 'es': 'Cena romántica'},
+        {'key': 'occasion_friends', 'fr': 'Entre amis', 'en': 'With friends', 'es': 'Con amigos'},
+        {'key': 'occasion_family', 'fr': 'En famille', 'en': 'With family', 'es': 'En familia'},
+        {'key': 'occasion_business', 'fr': 'Affaires', 'en': 'Business', 'es': 'Negocios'},
+        {'key': 'occasion_visit', 'fr': 'Simple visite', 'en': 'Just visiting', 'es': 'Simple visita'},
     ],
     'atmosphere': [
-        {'key': 'atmosphere_decoration', 'fr': 'La Décoration', 'en': 'The Decoration', 'es': 'La Decoración', 'it': 'La Decorazione', 'pt': 'A Decoração', 'zh': '装饰'},
-        {'key': 'atmosphere_music', 'fr': 'La Musique', 'en': 'The Music', 'es': 'La Música', 'it': 'La Musica', 'pt': 'A Música', 'zh': '音乐'},
-        {'key': 'atmosphere_festive', 'fr': 'L\'Énergie Festive', 'en': 'The Festive Energy', 'es': 'La Energía Festiva', 'it': 'L\'Energia Festiva', 'pt': 'A Energia Festiva', 'zh': '节日气氛'},
-        {'key': 'atmosphere_lighting', 'fr': 'L\'Éclairage', 'en': 'The Lighting', 'es': 'La Iluminación', 'it': 'L\'Illuminazione', 'pt': 'A Iluminação', 'zh': '灯光'},
-        {'key': 'atmosphere_comfort', 'fr': 'Le Confort', 'en': 'The Comfort', 'es': 'La Comodidad', 'it': 'Il Comfort', 'pt': 'O Conforto', 'zh': '舒适'},
-        {'key': 'atmosphere_romantic', 'fr': 'Romantique', 'en': 'Romantic', 'es': 'Romántico', 'it': 'Romantico', 'pt': 'Romântico', 'zh': '浪漫'},
-        {'key': 'atmosphere_calm', 'fr': 'Calme', 'en': 'Calm', 'es': 'Tranquilo', 'it': 'Calmo', 'pt': 'Calmo', 'zh': '安静'},
-        {'key': 'atmosphere_lively', 'fr': 'Animée', 'en': 'Lively', 'es': 'Animado', 'it': 'Vivace', 'pt': 'Animado', 'zh': '热闹'},
-        {'key': 'atmosphere_cozy', 'fr': 'Cosy', 'en': 'Cozy', 'es': 'Acogedor', 'it': 'Accogliente', 'pt': 'Aconchegante', 'zh': '舒适'},
-        {'key': 'atmosphere_elegant', 'fr': 'Élégante', 'en': 'Elegant', 'es': 'Elegante', 'it': 'Elegante', 'pt': 'Elegante', 'zh': '优雅'}
+        {'key': 'atmosphere_decoration', 'fr': 'La Décoration', 'en': 'The Decoration', 'es': 'La Decoración'},
+        {'key': 'atmosphere_music', 'fr': 'La Musique', 'en': 'The Music', 'es': 'La Música'},
+        {'key': 'atmosphere_festive', 'fr': 'L\'Énergie Festive', 'en': 'The Festive Energy', 'es': 'La Energía Festiva'},
+        {'key': 'atmosphere_lighting', 'fr': 'L\'Éclairage', 'en': 'The Lighting', 'es': 'La Iluminación'},
+        {'key': 'atmosphere_comfort', 'fr': 'Le Confort', 'en': 'The Comfort', 'es': 'La Comodidad'},
+        {'key': 'atmosphere_romantic', 'fr': 'Romantique', 'en': 'Romantic', 'es': 'Romántico'},
     ]
 }
 
@@ -114,12 +102,14 @@ class Restaurant(db.Model):
     user = db.relationship('User', back_populates='restaurant', cascade="all, delete-orphan")
     servers = db.relationship('Server', back_populates='restaurant', cascade="all, delete-orphan")
     dishes = db.relationship('Dish', back_populates='restaurant', cascade="all, delete-orphan")
+    # MODIFIÉ: Relation vers les sélections de tags
     tag_selections = db.relationship('RestaurantTag', back_populates='restaurant', cascade="all, delete-orphan")
 
+# MODÈLE POUR LES SÉLECTIONS DE TAGS PAR RESTAURANT
 class RestaurantTag(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
-    tag_key = db.Column(db.String(100), nullable=False, index=True) 
+    tag_key = db.Column(db.String(100), nullable=False, index=True) # Ex: 'service_attentive'
     restaurant = db.relationship('Restaurant', back_populates='tag_selections')
 
 class Server(db.Model):
@@ -174,6 +164,7 @@ def register():
 
     new_restaurant.slug = generate_unique_slug(restaurant_name, new_restaurant.id)
 
+    # MODIFIÉ: Ajout des tags par défaut à la création du restaurant
     default_tag_keys = [tag['key'] for category in PRE_TRANSLATED_TAGS for tag in PRE_TRANSLATED_TAGS[category]]
     for key in default_tag_keys:
         db.session.add(RestaurantTag(restaurant_id=new_restaurant.id, tag_key=key))
@@ -199,6 +190,7 @@ def get_restaurant_public_data(slug):
     restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
     servers = Server.query.filter_by(restaurant_id=restaurant.id).all()
     
+    # MODIFIÉ: Récupération des tags sélectionnés et de leurs traductions
     selected_tag_keys = {tag.tag_key for tag in restaurant.tag_selections}
     
     tags_for_frontend = {}
@@ -206,6 +198,7 @@ def get_restaurant_public_data(slug):
         tags_for_frontend[category] = []
         for tag_data in tags_list:
             if tag_data['key'] in selected_tag_keys:
+                # On ne renvoie que les traductions des langues activées
                 translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in restaurant.enabled_languages}
                 tags_for_frontend[category].append({
                     "key": tag_data['key'],
@@ -299,6 +292,7 @@ def manage_restaurant_settings():
         db.session.commit()
         return jsonify({"message": "Paramètres mis à jour", "logoUrl": restaurant.logo_url})
 
+# MODIFIÉ: Nouvelle gestion des options (tags)
 @app.route('/api/options', methods=['GET', 'POST'])
 @jwt_required()
 def manage_options():
@@ -312,4 +306,96 @@ def manage_options():
         })
     
     if request.method == 'POST':
-        data = request.get_jso
+        data = request.get_json()
+        new_selected_keys = data.get('selected_keys', [])
+        
+        # Supprimer les anciennes sélections
+        RestaurantTag.query.filter_by(restaurant_id=restaurant_id).delete()
+        
+        # Ajouter les nouvelles sélections
+        for key in new_selected_keys:
+            db.session.add(RestaurantTag(restaurant_id=restaurant_id, tag_key=key))
+            
+        db.session.commit()
+        return jsonify({"message": "Options mises à jour avec succès."}), 200
+
+@app.route('/api/servers', methods=['GET', 'POST'])
+@jwt_required()
+def manage_servers():
+    restaurant_id = get_restaurant_id_from_token()
+    if request.method == 'GET':
+        servers = Server.query.filter_by(restaurant_id=restaurant_id).all()
+        return jsonify([{"id": s.id, "name": s.name, "avatar_url": s.avatar_url} for s in servers])
+    if request.method == 'POST':
+        name = request.form.get('name')
+        if not name: return jsonify({"error": "Le nom est requis"}), 400
+        avatar_url = None
+        if 'avatar' in request.files:
+            file = request.files['avatar']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                avatar_url = f'/uploads/{filename}'
+        new_server = Server(name=name, avatar_url=avatar_url, restaurant_id=restaurant_id)
+        db.session.add(new_server)
+        db.session.commit()
+        return jsonify({"id": new_server.id, "name": new_server.name, "avatar_url": new_server.avatar_url}), 201
+
+@app.route('/api/servers/<int:server_id>', methods=['PUT', 'DELETE'])
+@jwt_required()
+def manage_single_server(server_id):
+    restaurant_id = get_restaurant_id_from_token()
+    server = Server.query.filter_by(id=server_id, restaurant_id=restaurant_id).first_or_404()
+    if request.method == 'PUT':
+        server.name = request.form.get('name', server.name)
+        if 'avatar' in request.files:
+            file = request.files['avatar']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                server.avatar_url = f'/uploads/{filename}'
+        db.session.commit()
+        return jsonify({"id": server.id, "name": server.name, "avatar_url": server.avatar_url})
+    if request.method == 'DELETE':
+        db.session.delete(server)
+        db.session.commit()
+        return '', 204
+
+@app.route('/api/menu', methods=['GET', 'POST'])
+@jwt_required()
+def manage_menu():
+    restaurant_id = get_restaurant_id_from_token()
+    if request.method == 'GET':
+        dishes = Dish.query.filter_by(restaurant_id=restaurant_id).all()
+        menu_by_category = {}
+        for dish in dishes:
+            if dish.category not in menu_by_category: menu_by_category[dish.category] = []
+            menu_by_category[dish.category].append({"id": dish.id, "name": dish.name})
+        return jsonify(menu_by_category)
+    if request.method == 'POST':
+        data = request.get_json()
+        if not data.get('name') or not data.get('category'):
+            return jsonify({"error": "Le nom et la catégorie sont requis"}), 400
+        new_dish = Dish(name=data['name'], category=data['category'], restaurant_id=restaurant_id)
+        db.session.add(new_dish)
+        db.session.commit()
+        return jsonify({"id": new_dish.id, "name": new_dish.name, "category": new_dish.category}), 201
+
+@app.route('/api/menu/<int:dish_id>', methods=['PUT', 'DELETE'])
+@jwt_required()
+def manage_single_dish(dish_id):
+    restaurant_id = get_restaurant_id_from_token()
+    dish = Dish.query.filter_by(id=dish_id, restaurant_id=restaurant_id).first_or_404()
+    if request.method == 'PUT':
+        data = request.get_json()
+        dish.name = data.get('name', dish.name)
+        dish.category = data.get('category', dish.category)
+        db.session.commit()
+        return jsonify({"id": dish.id, "name": dish.name, "category": dish.category})
+    if request.method == 'DELETE':
+        db.session.delete(dish)
+        db.session.commit()
+        return '', 204
+
+if __name__ == '__main__':
+    app.run(debug=True)
