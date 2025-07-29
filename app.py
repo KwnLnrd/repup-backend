@@ -10,7 +10,7 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required, JWTManager, get_current_user
+from flask_jwt_extended import create_access_token, jwt_required, JWTManager, get_current_user
 
 # --- CONFIGURATION INITIALE ---
 load_dotenv()
@@ -98,13 +98,22 @@ class CustomTag(db.Model):
 with app.app_context():
     db.create_all()
 
+# --- GESTION DE L'UTILISATEUR JWT ---
+
 @jwt.user_lookup_loader
 def user_lookup_callback(_jwt_header, jwt_data):
+    """
+    Cette fonction est appelée à chaque fois qu'une route protégée est accédée,
+    et elle charge l'utilisateur à partir de l'ID stocké dans le token.
+    """
     identity = jwt_data["sub"]
-    return User.query.filter_by(id=identity).one_or_none()
+    # CORRECTION : Convertir l'identité (qui est une chaîne dans le JWT) en entier
+    return User.query.filter_by(id=int(identity)).one_or_none()
 
 def get_restaurant_id_from_token():
-    # Utilise get_current_user() qui est la méthode recommandée
+    """
+    Récupère l'ID du restaurant associé à l'utilisateur actuellement connecté.
+    """
     current_user = get_current_user()
     if current_user:
         return current_user.restaurant_id
@@ -245,7 +254,6 @@ def manage_restaurant_settings():
         
         if 'enabledLanguages' in data:
             try:
-                # Les données du formulaire sont des chaînes, il faut parser le JSON
                 restaurant.enabled_languages = json.loads(data.get('enabledLanguages'))
             except json.JSONDecodeError:
                 return jsonify({"error": "Format JSON invalide pour les langues"}), 400
