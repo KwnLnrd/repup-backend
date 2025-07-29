@@ -40,9 +40,13 @@ CORS(app, origins=["*"], supports_credentials=True, allow_headers=["Authorizatio
 database_url = os.getenv('DATABASE_URL')
 if not database_url:
     raise RuntimeError("DATABASE_URL is not set in .env file.")
-# Assurer la compatibilité avec Heroku/Render
+
+# CORRECTION: S'assurer que SQLAlchemy utilise le driver 'psycopg' (v3) et non 'psycopg2'
 if database_url.startswith("postgres://"):
-    database_url = database_url.replace("postgres://", "postgresql://", 1)
+    database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
+elif database_url.startswith("postgresql://") and "+psycopg" not in database_url:
+    database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
