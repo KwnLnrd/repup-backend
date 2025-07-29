@@ -99,7 +99,6 @@ def get_restaurant_id_from_token():
 def generate_unique_slug(name, restaurant_id):
     """Génère un slug unique à partir d'un nom."""
     base_slug = name.lower().replace(' ', '-')
-    # Supprime les caractères non alphanumériques sauf les tirets
     base_slug = re.sub(r'[^a-z0-9-]', '', base_slug)
     return f"{base_slug}-{restaurant_id}"
 
@@ -118,9 +117,8 @@ def register():
     
     new_restaurant = Restaurant(name=restaurant_name, slug="temporary-slug")
     db.session.add(new_restaurant)
-    db.session.flush() # Flush pour obtenir l'ID du nouveau restaurant
+    db.session.flush()
 
-    # Met à jour le slug avec l'ID pour garantir l'unicité
     new_restaurant.slug = generate_unique_slug(restaurant_name, new_restaurant.id)
 
     default_tags = {
@@ -187,11 +185,9 @@ def manage_restaurant_settings():
     elif request.method == 'PUT':
         data = request.get_json()
         
-        # Vérifie si le nom du restaurant a changé
         new_name = data.get('name')
         if new_name and new_name != restaurant.name:
             restaurant.name = new_name
-            # Met à jour le slug si le nom change
             restaurant.slug = generate_unique_slug(new_name, restaurant.id)
 
         restaurant.primary_color = data.get('primaryColor', restaurant.primary_color)
@@ -228,14 +224,22 @@ def manage_tags():
         db.session.commit()
         return jsonify({"id": new_tag.id, "category": new_tag.category, "text": new_tag.text}), 201
 
-@app.route('/api/tags/<int:tag_id>', methods=['DELETE'])
+@app.route('/api/tags/<int:tag_id>', methods=['PUT', 'DELETE'])
 @jwt_required()
-def delete_tag(tag_id):
+def handle_tag(tag_id):
     restaurant_id = get_restaurant_id_from_token()
     tag = CustomTag.query.filter_by(id=tag_id, restaurant_id=restaurant_id).first_or_404()
-    db.session.delete(tag)
-    db.session.commit()
-    return jsonify({"message": "Option supprimée avec succès"})
+    if request.method == 'PUT':
+        data = request.get_json()
+        if 'text' in data:
+            tag.text = data['text']
+            db.session.commit()
+            return jsonify({"id": tag.id, "text": tag.text})
+        return jsonify({"error": "Le texte est requis"}), 400
+    elif request.method == 'DELETE':
+        db.session.delete(tag)
+        db.session.commit()
+        return jsonify({"message": "Option supprimée avec succès"})
 
 @app.route('/api/logo-upload', methods=['POST'])
 @jwt_required()
@@ -290,14 +294,15 @@ def handle_server(server_id):
     server = Server.query.filter_by(id=server_id, restaurant_id=restaurant_id).first_or_404()
     if request.method == 'PUT':
         data = request.get_json()
-        server.name = data.get('name', server.name)
-        db.session.commit()
-        return jsonify({"id": server.id, "name": server.name})
+        if 'name' in data:
+            server.name = data['name']
+            db.session.commit()
+            return jsonify({"id": server.id, "name": server.name})
+        return jsonify({"error": "Le nom est requis"}), 400
     elif request.method == 'DELETE':
         db.session.delete(server)
         db.session.commit()
         return jsonify({"message": "Serveur supprimé"})
-    return jsonify({"error": "Méthode non autorisée"}), 405
 
 @app.route('/api/menu-items', methods=['GET'])
 @jwt_required()
@@ -327,15 +332,15 @@ def handle_dish(dish_id):
     dish = Dish.query.filter_by(id=dish_id, restaurant_id=restaurant_id).first_or_404()
     if request.method == 'PUT':
         data = request.get_json()
-        dish.name = data.get('name', dish.name)
-        dish.category = data.get('category', dish.category)
-        db.session.commit()
-        return jsonify({"id": dish.id, "name": dish.name, "category": dish.category})
+        if 'name' in data:
+            dish.name = data['name']
+            db.session.commit()
+            return jsonify({"id": dish.id, "name": dish.name, "category": dish.category})
+        return jsonify({"error": "Le nom est requis"}), 400
     elif request.method == 'DELETE':
         db.session.delete(dish)
         db.session.commit()
         return jsonify({"message": "Plat supprimé"})
-    return jsonify({"error": "Méthode non autorisée"}), 405
 
 @app.route('/')
 def index():
