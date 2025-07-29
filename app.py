@@ -221,19 +221,22 @@ def get_restaurant_public_data(slug):
         tags_for_frontend[category] = []
         for tag_data in tags_list:
             if tag_data['key'] in selected_tag_keys:
-                # CORRECTION : S'assurer que enabled_languages est une liste avant de l'utiliser
-                enabled_languages = restaurant.enabled_languages if restaurant.enabled_languages is not None else ['fr', 'en']
+                # FIX: Ensure enabled_languages is a non-empty list
+                enabled_languages = restaurant.enabled_languages if restaurant.enabled_languages else ['fr']
                 translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in enabled_languages}
                 tags_for_frontend[category].append({
                     "key": tag_data['key'],
                     "translations": translations
                 })
 
+    # FIX: Ensure enabled_languages sent to frontend is never null or empty
+    final_enabled_languages = restaurant.enabled_languages if restaurant.enabled_languages else ['fr']
+
     return jsonify({
         "name": restaurant.name, "logoUrl": restaurant.logo_url, "primaryColor": restaurant.primary_color,
         "links": {"google": restaurant.google_link, "tripadvisor": restaurant.tripadvisor_link},
         "servers": [{"id": s.id, "name": s.name, "avatar": s.avatar_url} for s in servers],
-        "languages": restaurant.enabled_languages,
+        "languages": final_enabled_languages,
         "tags": tags_for_frontend
     })
 
@@ -326,8 +329,14 @@ def manage_restaurant_settings():
         
         if 'enabledLanguages' in data:
             try:
-                restaurant.enabled_languages = json.loads(data.get('enabledLanguages'))
-            except json.JSONDecodeError:
+                langs = json.loads(data.get('enabledLanguages'))
+                # Ensure it's a list and not empty
+                if isinstance(langs, list) and langs:
+                    restaurant.enabled_languages = langs
+                else:
+                    # Fallback to default if an empty list is provided
+                    restaurant.enabled_languages = ['fr']
+            except (json.JSONDecodeError, TypeError):
                 return jsonify({"error": "Format JSON invalide pour les langues"}), 400
 
         if 'logo' in request.files:
