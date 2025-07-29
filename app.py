@@ -85,6 +85,7 @@ class Restaurant(db.Model):
     slug = db.Column(db.String(100), unique=True, nullable=False, index=True)
     logo_url = db.Column(db.Text, nullable=True)
     primary_color = db.Column(db.String(7), default='#BF5B3F')
+    # Utilisation de db.Text pour autoriser des URL très longues
     google_link = db.Column(db.Text, nullable=True)
     tripadvisor_link = db.Column(db.Text, nullable=True)
     enabled_languages = db.Column(db.JSON, default=['fr', 'en'])
