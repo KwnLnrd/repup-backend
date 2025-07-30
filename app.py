@@ -11,8 +11,6 @@ from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from flask_jwt_extended import create_access_token, jwt_required, JWTManager, get_current_user, get_jwt_identity
-from dateutil.parser import parse as parse_datetime
-from apify_client import ApifyClient
 
 # --- CONFIGURATION INITIALE ---
 load_dotenv()
@@ -41,8 +39,6 @@ if not database_url:
     raise RuntimeError("DATABASE_URL is not set in .env file.")
 
 # CORRECTION FINALE : Forcer l'utilisation du driver 'psycopg' (v3)
-# SQLAlchemy par défaut cherche 'psycopg2'. En ajoutant '+psycopg', on lui indique
-# explicitement d'utiliser la nouvelle librairie que nous avons installée.
 if database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
 elif database_url.startswith("postgresql://") and "+psycopg" not in database_url:
@@ -114,7 +110,6 @@ class Restaurant(db.Model):
     servers = db.relationship('Server', back_populates='restaurant', cascade="all, delete-orphan")
     dishes = db.relationship('Dish', back_populates='restaurant', cascade="all, delete-orphan")
     tag_selections = db.relationship('RestaurantTag', back_populates='restaurant', cascade="all, delete-orphan")
-    reviews = db.relationship('Review', back_populates='restaurant', cascade="all, delete-orphan")
 
 class RestaurantTag(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -136,85 +131,11 @@ class Dish(db.Model):
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
     restaurant = db.relationship('Restaurant', back_populates='dishes')
 
-class Review(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
-    source = db.Column(db.String(20), nullable=False) # 'google', 'tripadvisor', 'internal'
-    author_name = db.Column(db.String(100))
-    rating = db.Column(db.Float, nullable=False)
-    content = db.Column(db.Text)
-    review_date = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    restaurant = db.relationship('Restaurant', back_populates='reviews')
-
 
 with app.app_context():
     db.create_all()
 
 # --- FONCTIONS HELPERS ---
-
-def save_reviews_to_db(reviews_data, restaurant_id, source):
-    """Sauvegarde les avis parsés dans la BDD, en évitant les doublons."""
-    new_reviews_count = 0
-    for review_item in reviews_data:
-        existing_review = Review.query.filter_by(
-            restaurant_id=restaurant_id, 
-            content=review_item.get('content'),
-            author_name=review_item.get('author_name')
-        ).first()
-
-        if not existing_review and review_item.get('content'):
-            new_review = Review(
-                restaurant_id=restaurant_id,
-                source=source,
-                author_name=review_item.get('author_name'),
-                rating=float(review_item.get('rating', 0)),
-                content=review_item.get('content'),
-                review_date=parse_datetime(review_item.get('review_date')) if review_item.get('review_date') else datetime.utcnow()
-            )
-            db.session.add(new_review)
-            new_reviews_count += 1
-    if new_reviews_count > 0:
-        db.session.commit()
-    app.logger.info(f"{new_reviews_count} nouveaux avis de '{source}' ont été ajoutés.")
-
-
-def scrape_reviews_with_apify(actor_id, target_urls):
-    """Lance un Actor Apify et retourne les résultats."""
-    apify_token = os.getenv('APIFY_API_TOKEN')
-    if not apify_token:
-        app.logger.error("Le token API d'Apify (APIFY_API_TOKEN) est manquant.")
-        return []
-
-    try:
-        client = ApifyClient(apify_token)
-        run_input = {
-            "startUrls": [{"url": url} for url in target_urls],
-            "maxReviews": 50, "language": "fr", "maxConcurrency": 5
-        }
-        app.logger.info(f"Lancement de l'Actor Apify '{actor_id}' pour les URLs: {target_urls}")
-        run = client.actor(actor_id).call(run_input=run_input, wait_secs=120) 
-        app.logger.info(f"Récupération des résultats pour le run ID: {run['defaultDatasetId']}")
-        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
-        app.logger.info(f"{len(items)} résultats bruts récupérés de l'Actor '{actor_id}'.")
-        return items
-    except Exception as e:
-        app.logger.error(f"Erreur lors de l'exécution de l'Actor Apify '{actor_id}': {e}")
-        return []
-
-def parse_apify_google_reviews(items):
-    """Transforme les résultats bruts de l'Actor Google Maps."""
-    parsed_reviews = []
-    for item in items:
-        if item.get('text'):
-            parsed_reviews.append({
-                'author_name': item.get('name', 'Utilisateur Google'),
-                'rating': item.get('stars', 0),
-                'content': item.get('text'),
-                'review_date': item.get('publishedAtDate', str(datetime.utcnow()))
-            })
-    return parsed_reviews
-
 
 # --- GESTION DE L'UTILISATEUR JWT ---
 @jwt.user_lookup_loader
@@ -244,7 +165,7 @@ def generate_unique_slug(name, restaurant_id):
 @app.route('/')
 def index():
     # Marqueur de version pour vérifier le déploiement
-    return jsonify({"status": "ok", "message": "RepUP API is running.", "version": "1.6-final"}), 200
+    return jsonify({"status": "ok", "message": "RepUP API is running.", "version": "1.7-no-analysis"}), 200
 
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
@@ -509,84 +430,6 @@ def manage_single_dish(dish_id):
         db.session.delete(dish)
         db.session.commit()
         return '', 204
-
-@app.route('/api/strategic-analysis', methods=['POST'])
-@jwt_required()
-def trigger_strategic_analysis():
-    restaurant_id = get_restaurant_id_from_verified_token()
-    if not restaurant_id: return jsonify({"error": "Token invalide"}), 401
-
-    restaurant = db.session.get(Restaurant, restaurant_id)
-    if not restaurant:
-        return jsonify({"error": "Restaurant non trouvé"}), 404
-
-    app.logger.info(f"Début de l'analyse pour le restaurant ID: {restaurant_id}")
-    Review.query.filter(
-        Review.restaurant_id == restaurant_id,
-        Review.source.in_(['google', 'tripadvisor'])
-    ).delete()
-    db.session.commit()
-
-    if restaurant.google_link:
-        app.logger.info(f"Lien Google trouvé: {restaurant.google_link}.")
-        actor_id = os.getenv("GOOGLE_MAPS_ACTOR_ID", "nwua9Gu5YrADL7ZDj")
-        raw_google_reviews = scrape_reviews_with_apify(actor_id, [restaurant.google_link])
-        
-        reviews_to_parse = []
-        if raw_google_reviews and isinstance(raw_google_reviews, list) and len(raw_google_reviews) > 0:
-            place_data = raw_google_reviews[0]
-            if 'reviews' in place_data and isinstance(place_data['reviews'], list):
-                reviews_to_parse = place_data['reviews']
-            else:
-                 reviews_to_parse = raw_google_reviews
-        
-        if reviews_to_parse:
-            parsed_reviews = parse_apify_google_reviews(reviews_to_parse)
-            save_reviews_to_db(parsed_reviews, restaurant_id, 'google')
-            app.logger.info(f"{len(parsed_reviews)} avis Google traités.")
-        else:
-            app.logger.warning("Aucun avis à parser trouvé.")
-            
-    all_reviews = Review.query.filter_by(restaurant_id=restaurant_id).order_by(Review.created_at.desc()).all()
-    if not all_reviews:
-        return jsonify({"error": "Aucun avis trouvé pour générer une analyse."}), 404
-
-    review_contents = [r.content for r in all_reviews if r.content]
-    prompt = f"""
-    Analyse la liste d'avis suivante pour le restaurant "{restaurant.name}" et fournis une analyse stratégique complète au format JSON valide.
-    Avis: {json.dumps(review_contents[:100])}
-    ---
-    JSON attendu:
-    {{
-      "executive_summary": "Résumé de 2-3 phrases.",
-      "strengths": ["Point fort 1", "Point fort 2"],
-      "weaknesses": ["Axe d'amélioration 1", "Axe d'amélioration 2"],
-      "opportunities": ["Opportunité 1"],
-      "proactive_suggestions": ["Marketing: Suggestion 1", "Opérationnel: Suggestion 2"]
-    }}
-    """
-    
-    api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key: 
-        return jsonify({"error": "La clé API pour l'IA n'est pas configurée."}), 500
-
-    openai_url = 'https://api.openai.com/v1/chat/completions'
-    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
-    payload = { 
-        "model": "gpt-4-turbo", 
-        "messages": [{"role": "user", "content": prompt}], 
-        "response_format": { "type": "json_object" } 
-    }
-    try:
-        response = requests.post(openai_url, headers=headers, json=payload, timeout=90)
-        response.raise_for_status()
-        analysis_data = json.loads(response.json()['choices'][0]['message']['content'])
-        return jsonify(analysis_data)
-    except requests.exceptions.Timeout:
-        return jsonify({"error": "La génération de l'analyse a pris trop de temps."}), 504
-    except Exception as e:
-        app.logger.error(f"Erreur API OpenAI: {e}")
-        return jsonify({"error": "Erreur lors de la communication avec l'IA."}), 502
 
 
 if __name__ == '__main__':
