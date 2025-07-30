@@ -33,8 +33,7 @@ logging.basicConfig(level=logging.INFO)
 app.logger.setLevel(logging.INFO)
 
 # --- CORS ---
-# IMPORTANT: Mettez l'URL de votre frontend Netlify ici pour la production
-CORS(app, origins=["https://repup-avis.netlify.app", "http://127.0.0.1:5500"], supports_credentials=True, allow_headers=["Authorization", "Content-Type"])
+CORS(app, origins=["https://repup-avis.netlify.app", "http://127.0.0.1:5500", "http://localhost:5500"], supports_credentials=True, allow_headers=["Authorization", "Content-Type"])
 
 # --- CONFIGURATION BDD & JWT ---
 database_url = os.getenv('DATABASE_URL')
@@ -174,9 +173,59 @@ def generate_unique_slug(name, restaurant_id):
     return f"{base_slug}-{restaurant_id}"
 
 # --- ROUTES PUBLIQUES ---
+@app.route('/')
+def index():
+    return jsonify({"status": "ok", "message": "RepUP API is running."}), 200
+    
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+@app.route('/api/public/restaurant/<string:slug>', methods=['GET'])
+def get_restaurant_public_data(slug):
+    restaurant = Restaurant.query.filter_by(slug=slug).first_or_404("Restaurant non trouvé")
+    servers = Server.query.filter_by(restaurant_id=restaurant.id).all()
+    selected_tag_keys = {tag.tag_key for tag in restaurant.tag_selections}
+    tags_for_frontend = {}
+    for category, tags_list in PRE_TRANSLATED_TAGS.items():
+        tags_for_frontend[category] = []
+        for tag_data in tags_list:
+            if tag_data['key'] in selected_tag_keys:
+                translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in restaurant.enabled_languages}
+                translations['fr'] = tag_data['fr']
+                tags_for_frontend[category].append({"key": tag_data['key'], "translations": translations})
+    return jsonify({
+        "name": restaurant.name, "logoUrl": restaurant.logo_url, "primaryColor": restaurant.primary_color,
+        "links": {"google": restaurant.google_link, "tripadvisor": restaurant.tripadvisor_link},
+        "servers": [{"id": s.id, "name": s.name, "avatar": s.avatar_url} for s in servers],
+        "languages": restaurant.enabled_languages, "tags": tags_for_frontend
+    })
+
+@app.route('/api/public/menu/<string:slug>', methods=['GET'])
+def get_public_menu(slug):
+    restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
+    dishes = Dish.query.filter_by(restaurant_id=restaurant.id).all()
+    menu_by_category = {}
+    for dish in dishes:
+        if dish.category not in menu_by_category: menu_by_category[dish.category] = []
+        menu_by_category[dish.category].append({"id": dish.id, "name": dish.name})
+    return jsonify(menu_by_category)
+
+@app.route('/api/generate-review', methods=['POST'])
+def generate_review_proxy():
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key: return jsonify({"error": "La clé API OpenAI n'est pas configurée."}), 500
+    prompt = request.get_json().get('prompt')
+    if not prompt: return jsonify({"error": "Le prompt est manquant."}), 400
+    try:
+        response = requests.post('https://api.openai.com/v1/chat/completions', 
+            headers={'Authorization': f'Bearer {api_key}'}, 
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": prompt}]})
+        response.raise_for_status()
+        return jsonify({"review": response.json()['choices'][0]['message']['content'].strip()})
+    except Exception as e:
+        app.logger.error(f"Erreur API OpenAI: {e}")
+        return jsonify({"error": "Erreur lors de la communication avec l'IA."}), 502
 
 # --- ROUTES D'AUTHENTIFICATION ET PROFIL ---
 @app.route('/api/register', methods=['POST'])
@@ -266,6 +315,10 @@ def change_password():
     return jsonify({"message": "Mot de passe changé."})
 
 # --- ROUTES MÉTIER PROTÉGÉES ---
+@app.route('/api/test-auth', methods=['GET'])
+@jwt_required()
+def test_auth():
+    return jsonify({"message": f"Authentification réussie pour l'user_id {get_jwt_identity()}"}), 200
 
 @app.route('/api/restaurant', methods=['GET', 'PUT'])
 @jwt_required()
