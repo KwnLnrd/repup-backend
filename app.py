@@ -50,13 +50,7 @@ app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "une-cle-vraiment-secrete-et-longue-pour-la-prod")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
-
-# CORRECTION : Configuration JWT plus robuste pour éviter les erreurs 422
-# Spécifier explicitement que les tokens sont dans les en-têtes Authorization
 app.config["JWT_TOKEN_LOCATION"] = ["headers"]
-# Désactiver complètement la protection CSRF de JWT-Extended.
-# Une erreur 422 peut survenir si le frontend n'envoie pas le header X-CSRF-TOKEN
-# alors que le backend le demande. On désactive cette vérification pour simplifier l'interaction.
 app.config["JWT_CSRF_PROTECTION"] = False
 
 db = SQLAlchemy(app)
@@ -349,6 +343,14 @@ def generate_review_proxy():
         return jsonify({"error": "Format de réponse inattendu de la part d'OpenAI."}), 500
 
 # --- ROUTES PROTÉGÉES ---
+
+# NOUVELLE ROUTE : Route de test pour valider le token JWT
+@app.route('/api/test-auth', methods=['GET'])
+@jwt_required()
+def test_auth():
+    user_id = get_jwt_identity()
+    app.logger.info(f"Auth test successful for user ID: {user_id}")
+    return jsonify({"message": f"Authentication successful for user_id {user_id}"}), 200
 
 @app.route('/api/restaurant', methods=['GET', 'PUT'])
 @jwt_required()
