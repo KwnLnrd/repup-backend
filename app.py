@@ -487,7 +487,37 @@ def manage_single_dish(dish_id):
         db.session.commit()
         return '', 204
 
-# --- NOUVELLE ROUTE D'ANALYSE STRATÉGIQUE ---
+# --- ROUTE POUR L'ONGLET "TOUS LES AVIS" ---
+@app.route('/api/reviews', methods=['GET'])
+@jwt_required()
+def get_all_reviews():
+    restaurant_id = get_restaurant_id_from_token()
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 10, type=int)
+    
+    reviews_query = Review.query.filter_by(restaurant_id=restaurant_id).order_by(Review.review_date.desc())
+    paginated_reviews = reviews_query.paginate(page=page, per_page=per_page, error_out=False)
+    
+    reviews_data = []
+    for review in paginated_reviews.items:
+        reviews_data.append({
+            "id": review.id,
+            "source": review.source,
+            "author_name": review.author_name,
+            "rating": review.rating,
+            "content": review.content,
+            "review_date": review.review_date.isoformat() if review.review_date else None
+        })
+        
+    return jsonify({
+        "reviews": reviews_data,
+        "total_pages": paginated_reviews.pages,
+        "current_page": paginated_reviews.page,
+        "has_next": paginated_reviews.has_next,
+        "has_prev": paginated_reviews.has_prev
+    })
+
+# --- ROUTE D'ANALYSE STRATÉGIQUE ---
 @app.route('/api/strategic-analysis', methods=['POST'])
 @jwt_required()
 def trigger_strategic_analysis():
@@ -512,16 +542,13 @@ def trigger_strategic_analysis():
         actor_id = os.getenv("GOOGLE_MAPS_ACTOR_ID", "nwua9Gu5YrADL7ZDj")
         raw_google_reviews = scrape_reviews_with_apify(actor_id, [restaurant.google_link])
         
-        # CORRECTION: Extraire la liste des avis du résultat du scraper
         reviews_to_parse = []
         if raw_google_reviews and isinstance(raw_google_reviews, list) and len(raw_google_reviews) > 0:
-            # Le scraper "Google Maps Scraper" retourne une liste avec un seul objet contenant les détails du lieu
             place_data = raw_google_reviews[0]
             if 'reviews' in place_data and isinstance(place_data['reviews'], list):
                 reviews_to_parse = place_data['reviews']
                 app.logger.info(f"Trouvé {len(reviews_to_parse)} avis dans l'objet principal.")
             else:
-                 # Fallback si le format change ou si un autre scraper est utilisé
                  reviews_to_parse = raw_google_reviews
                  app.logger.info("Format de scraper non standard détecté, traitement comme une liste plate.")
         
@@ -535,13 +562,10 @@ def trigger_strategic_analysis():
     else:
         app.logger.warning("Aucun lien Google configuré pour ce restaurant.")
     
-    # (Optionnel) Ajouter le scraping TripAdvisor ici sur le même modèle
-    # if restaurant.tripadvisor_link: ...
-
-    # Étape 3: Récupérer tous les avis (internes + externes)
+    # Étape 3: Récupérer tous les avis
     all_reviews = Review.query.filter_by(restaurant_id=restaurant_id).order_by(Review.created_at.desc()).all()
     if not all_reviews:
-        return jsonify({"error": "Aucun avis (interne ou externe) n'a été trouvé pour générer une analyse. Assurez-vous que vos liens de scraping sont corrects ou que vous avez des avis internes."}), 404
+        return jsonify({"error": "Aucun avis n'a été trouvé pour générer une analyse."}), 404
 
     app.logger.info(f"Total de {len(all_reviews)} avis trouvés pour l'analyse.")
     review_contents = [r.content for r in all_reviews if r.content]
@@ -549,18 +573,17 @@ def trigger_strategic_analysis():
     # Étape 4: Préparer le prompt pour l'IA
     prompt = f"""
     En tant que consultant expert pour restaurants, analyse la liste d'avis suivante pour le restaurant "{restaurant.name}".
-    Fournis une analyse stratégique complète au format JSON. Le JSON doit être valide et contenir uniquement les clés demandées.
+    Fournis une analyse stratégique complète au format JSON.
 
-    Voici les avis (les plus récents en premier) :
-    {json.dumps(review_contents[:100])}
+    Avis : {json.dumps(review_contents[:100])}
 
     ---
-    En te basant sur ces avis, fournis les éléments suivants dans un objet JSON unique :
-    1.  "executive_summary": Un résumé percutant de 2-3 phrases sur les tendances générales, les points forts et les faiblesses.
-    2.  "strengths": Une liste de 3 à 5 points forts majeurs, cités de manière récurrente.
-    3.  "weaknesses": Une liste de 3 à 5 axes d'amélioration prioritaires, basés sur les critiques fréquentes.
-    4.  "opportunities": Une liste de 2-3 "pépites" ou opportunités inattendues (suggestions de clients, compliments sur des détails, etc.).
-    5.  "proactive_suggestions": Une liste de 3 suggestions concrètes et actionnables (Marketing, Opérationnel, Management). Formatte chaque suggestion comme "Catégorie: Suggestion détaillée.".
+    Fournis les éléments suivants dans un objet JSON unique :
+    1.  "executive_summary": Un résumé percutant de 2-3 phrases.
+    2.  "strengths": Une liste de 3 à 5 points forts.
+    3.  "weaknesses": Une liste de 3 à 5 axes d'amélioration.
+    4.  "opportunities": Une liste de 2-3 opportunités inattendues.
+    5.  "proactive_suggestions": Une liste de 3 suggestions concrètes (Marketing, Opérationnel, Management) formatées comme "Catégorie: Suggestion.".
     """
     
     # Étape 5: Appeler l'API d'IA
@@ -571,7 +594,6 @@ def trigger_strategic_analysis():
 
     openai_url = 'https://api.openai.com/v1/chat/completions'
     headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
-    # Utilisation de gpt-4-turbo pour une meilleure qualité d'analyse et le support du format JSON
     payload = { 
         "model": "gpt-4-turbo", 
         "messages": [{"role": "user", "content": prompt}], 
@@ -579,10 +601,9 @@ def trigger_strategic_analysis():
     }
     try:
         app.logger.info("Envoi de la requête à l'API OpenAI...")
-        response = requests.post(openai_url, headers=headers, json=payload, timeout=90) # Timeout plus long pour l'analyse
+        response = requests.post(openai_url, headers=headers, json=payload, timeout=90)
         response.raise_for_status()
         
-        # Le contenu est déjà un objet JSON grâce à "json_object"
         analysis_data = json.loads(response.json()['choices'][0]['message']['content'])
         app.logger.info("Analyse stratégique générée avec succès.")
         return jsonify(analysis_data)
@@ -591,7 +612,7 @@ def trigger_strategic_analysis():
         return jsonify({"error": "La génération de l'analyse a pris trop de temps. Veuillez réessayer."}), 504
     except Exception as e:
         app.logger.error(f"Erreur lors de l'appel à l'API OpenAI: {e}")
-        return jsonify({"error": "Une erreur est survenue lors de la communication avec le service d'intelligence artificielle."}), 502
+        return jsonify({"error": "Une erreur est survenue lors de la communication avec le service d'IA."}), 502
 
 
 if __name__ == '__main__':
