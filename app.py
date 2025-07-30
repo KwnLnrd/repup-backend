@@ -510,8 +510,8 @@ def trigger_strategic_analysis():
     # Étape 2: Lancer le scraping des nouvelles données
     if restaurant.google_link:
         app.logger.info(f"Lien Google trouvé: {restaurant.google_link}. Lancement du scraping.")
-        # L'ID de l'actor peut être stocké en variable d'environnement pour plus de flexibilité
-        actor_id = os.getenv("GOOGLE_MAPS_ACTOR_ID", "apify/google-maps-reviews-scraper")
+        # CORRECTION: Utilisation du bon identifiant d'acteur Apify
+        actor_id = os.getenv("GOOGLE_MAPS_ACTOR_ID", "apify/google-maps-scraper")
         raw_google_reviews = scrape_reviews_with_apify(actor_id, [restaurant.google_link])
         if raw_google_reviews:
             parsed_reviews = parse_apify_google_reviews(raw_google_reviews)
