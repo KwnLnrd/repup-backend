@@ -195,7 +195,6 @@ def scrape_reviews_with_apify(actor_id, target_urls):
         }
         
         app.logger.info(f"Lancement de l'Actor Apify '{actor_id}' pour les URLs: {target_urls}")
-        # CORRECTION: Remplacement de 'wait_for_finish' par 'wait_secs' qui est le paramètre correct
         run = client.actor(actor_id).call(run_input=run_input, wait_secs=120) 
         
         app.logger.info(f"Récupération des résultats pour le run ID: {run['defaultDatasetId']}")
@@ -510,13 +509,29 @@ def trigger_strategic_analysis():
     # Étape 2: Lancer le scraping des nouvelles données
     if restaurant.google_link:
         app.logger.info(f"Lien Google trouvé: {restaurant.google_link}. Lancement du scraping.")
-        # CORRECTION: Utilisation du bon identifiant d'acteur Apify
         actor_id = os.getenv("GOOGLE_MAPS_ACTOR_ID", "nwua9Gu5YrADL7ZDj")
         raw_google_reviews = scrape_reviews_with_apify(actor_id, [restaurant.google_link])
-        if raw_google_reviews:
-            parsed_reviews = parse_apify_google_reviews(raw_google_reviews)
+        
+        # CORRECTION: Extraire la liste des avis du résultat du scraper
+        reviews_to_parse = []
+        if raw_google_reviews and isinstance(raw_google_reviews, list) and len(raw_google_reviews) > 0:
+            # Le scraper "Google Maps Scraper" retourne une liste avec un seul objet contenant les détails du lieu
+            place_data = raw_google_reviews[0]
+            if 'reviews' in place_data and isinstance(place_data['reviews'], list):
+                reviews_to_parse = place_data['reviews']
+                app.logger.info(f"Trouvé {len(reviews_to_parse)} avis dans l'objet principal.")
+            else:
+                 # Fallback si le format change ou si un autre scraper est utilisé
+                 reviews_to_parse = raw_google_reviews
+                 app.logger.info("Format de scraper non standard détecté, traitement comme une liste plate.")
+        
+        if reviews_to_parse:
+            parsed_reviews = parse_apify_google_reviews(reviews_to_parse)
             save_reviews_to_db(parsed_reviews, restaurant_id, 'google')
-            app.logger.info(f"{len(parsed_reviews)} avis Google ont été traités.")
+            app.logger.info(f"{len(parsed_reviews)} avis Google ont été traités et sauvegardés.")
+        else:
+            app.logger.warning("Aucun avis à parser trouvé dans les données scrapées.")
+            
     else:
         app.logger.warning("Aucun lien Google configuré pour ce restaurant.")
     
@@ -581,4 +596,4 @@ def trigger_strategic_analysis():
 
 if __name__ == '__main__':
     # Utilisation de Gunicorn recommandée pour la production, mais pour le dev local :
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=Tr
