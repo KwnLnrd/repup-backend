@@ -10,7 +10,7 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from flask_jwt_extended import create_access_token, jwt_required, JWTManager, get_current_user, get_jwt_identity, verify_jwt_in_request
+from flask_jwt_extended import create_access_token, jwt_required, JWTManager, get_current_user, get_jwt_identity
 from dateutil.parser import parse as parse_datetime
 from apify_client import ApifyClient
 
@@ -52,10 +52,11 @@ app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "une-cle-vraiment-sec
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 app.config["JWT_TOKEN_LOCATION"] = ["headers"]
 
-# CORRECTION DÉFINITIVE : Désactivation explicite de la protection CSRF
-# La valeur par défaut est True pour les requêtes avec cookies, ce qui peut causer des erreurs 422 inattendues.
-# En la mettant à False, on s'assure que seule la validation du token Bearer est effectuée.
-app.config["JWT_COOKIE_CSRF_PROTECT"] = False
+# CORRECTION FINALE ET DÉFINITIVE :
+# Cette configuration désactive explicitement la recherche de jetons CSRF dans les cookies.
+# C'est la cause racine de l'erreur 422, car le serveur s'attendait à une protection CSRF
+# même pour une authentification par en-tête.
+app.config["JWT_CSRF_IN_COOKIES"] = False
 
 
 db = SQLAlchemy(app)
