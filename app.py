@@ -605,17 +605,4 @@ def trigger_strategic_analysis():
     }
     
     try:
-        response = requests.post(openai_url, headers=headers, json=payload, timeout=90)
-        response.raise_for_status()
-        analysis_data = json.loads(response.json()['choices'][0]['message']['content'])
-        return jsonify(analysis_data)
-    except requests.exceptions.Timeout:
-        return jsonify({"error": "La génération de l'analyse a pris trop de temps."}), 504
-    except Exception as e:
-        app.logger.error(f"Erreur API OpenAI: {e}")
-        return jsonify({"error": "Erreur lors de la communication avec l'IA."}), 502
-
-
-if __name__ == '__main__':
-    # Point d'entrée pour le développement local
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
+        response = reques
