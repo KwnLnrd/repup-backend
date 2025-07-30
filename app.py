@@ -158,8 +158,12 @@ class Review(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     restaurant = db.relationship('Restaurant', back_populates='reviews')
 
-with app.app_context():
-    db.create_all()
+# NOTE POUR LA PRODUCTION : La ligne ci-dessous est utile pour créer les tables
+# initialement, mais peut causer des problèmes de démarrage ou des timeouts dans un
+# environnement de production. Une fois que vos tables sont créées, il est plus sûr
+# de la commenter ou de la retirer.
+# with app.app_context():
+#     db.create_all()
 
 # --- GESTION DES TOKENS JWT (BLOCKLIST) ---
 @jwt.token_in_blocklist_loader
@@ -237,6 +241,13 @@ def generate_review_proxy():
 # --- ROUTES D'AUTHENTIFICATION ET PROFIL ---
 @app.route('/api/register', methods=['POST'])
 def register():
+    # On vérifie si la base de données est vide pour créer les tables si nécessaire
+    with app.app_context():
+        inspector = db.inspect(db.engine)
+        if not inspector.has_table("user"):
+            db.create_all()
+            app.logger.info("Tables de la base de données créées car elles n'existaient pas.")
+
     data = request.get_json()
     email, password, restaurant_name = data.get('email'), data.get('password'), data.get('restaurant_name')
     if not all([email, password, restaurant_name]): return jsonify({"error": "Données manquantes"}), 400
