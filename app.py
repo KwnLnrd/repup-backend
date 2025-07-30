@@ -50,7 +50,6 @@ app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "une-cle-vraiment-secrete-et-longue-pour-la-prod")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
-# CORRECTION FINALE: Désactivation de la protection CSRF qui cause l'erreur 422
 app.config["JWT_CSRF_PROTECTION"] = False
 
 db = SQLAlchemy(app)
@@ -233,6 +232,12 @@ def generate_unique_slug(name, restaurant_id):
     return f"{base_slug}-{restaurant_id}"
 
 # --- ROUTES PUBLIQUES ---
+
+# NOUVELLE ROUTE: Route racine pour les health checks de Render
+@app.route('/')
+def index():
+    return jsonify({"status": "ok", "message": "RepUP API is running."}), 200
+
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
@@ -570,4 +575,4 @@ def trigger_strategic_analysis():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=Tr
