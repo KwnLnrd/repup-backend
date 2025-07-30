@@ -419,24 +419,38 @@ def get_all_reviews():
     restaurant_id = get_restaurant_id_from_token()
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 10, type=int)
-    reviews_query = Review.query.filter_by(restaurant_id=restaurant_id).order_by(Review.review_date.desc())
+    sort_by = request.args.get('sort_by', 'newest', type=str)
+    
+    reviews_query = Review.query.filter_by(restaurant_id=restaurant_id)
+    
+    # Logique de tri
+    if sort_by == 'oldest':
+        reviews_query = reviews_query.order_by(Review.review_date.asc())
+    elif sort_by == 'rating_high':
+        reviews_query = reviews_query.order_by(Review.rating.desc(), Review.review_date.desc())
+    elif sort_by == 'rating_low':
+        reviews_query = reviews_query.order_by(Review.rating.asc(), Review.review_date.desc())
+    else: # newest par défaut
+        reviews_query = reviews_query.order_by(Review.review_date.desc())
+
     paginated_reviews = reviews_query.paginate(page=page, per_page=per_page, error_out=False)
+    
     reviews_data = [{
         "id": r.id, "source": r.source, "author_name": r.author_name, "rating": r.rating,
         "content": r.content, "review_date": r.review_date.isoformat() if r.review_date else None
     } for r in paginated_reviews.items]
+    
     return jsonify({
         "reviews": reviews_data, "total_pages": paginated_reviews.pages,
         "current_page": paginated_reviews.page, "has_next": paginated_reviews.has_next
     })
 
-# --- NOUVELLE ROUTE POUR LA TRADUCTION ---
 @app.route('/api/translate', methods=['POST'])
 @jwt_required()
 def translate_text():
     data = request.get_json()
     text_to_translate = data.get('text')
-    target_language = data.get('language', 'français') # Français par défaut
+    target_language = data.get('language', 'français')
 
     if not text_to_translate:
         return jsonify({"error": "Le texte à traduire est manquant."}), 400
@@ -459,7 +473,6 @@ def translate_text():
     except Exception as e:
         app.logger.error(f"Erreur API OpenAI pour la traduction: {e}")
         return jsonify({"error": "Erreur lors de la communication avec le service de traduction."}), 502
-
 
 @app.route('/api/strategic-analysis', methods=['POST'])
 @jwt_required()
