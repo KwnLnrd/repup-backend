@@ -596,4 +596,4 @@ def trigger_strategic_analysis():
 
 if __name__ == '__main__':
     # Utilisation de Gunicorn recommandée pour la production, mais pour le dev local :
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=Tr
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
