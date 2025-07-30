@@ -52,10 +52,12 @@ app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "une-cle-vraiment-sec
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 app.config["JWT_TOKEN_LOCATION"] = ["headers"]
 
-# CORRECTION FINALE ET DÉFINITIVE :
-# Cette configuration désactive explicitement la recherche de jetons CSRF dans les cookies.
-# C'est la cause racine de l'erreur 422, car le serveur s'attendait à une protection CSRF
-# même pour une authentification par en-tête.
+# CORRECTION DÉFINITIVE :
+# Désactivation complète et explicite de toutes les formes de protection CSRF.
+# C'est la cause racine de l'erreur 422. Ces lignes forcent la librairie à ne valider
+# que le token Bearer dans l'en-tête, sans attendre de jetons CSRF supplémentaires.
+app.config["JWT_CSRF_PROTECTION"] = False
+app.config["JWT_CSRF_CHECK_FORM"] = False
 app.config["JWT_CSRF_IN_COOKIES"] = False
 
 
