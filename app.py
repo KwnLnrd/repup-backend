@@ -34,7 +34,10 @@ logging.basicConfig(level=logging.INFO)
 app.logger.setLevel(logging.INFO)
 
 # --- CORS ---
-CORS(app, origins=["*"], supports_credentials=True, allow_headers=["Authorization", "Content-Type"])
+# AMÉLIORATION: Utilisation d'une origine spécifique au lieu du wildcard '*' avec supports_credentials=True pour une meilleure sécurité et compatibilité.
+frontend_url = os.getenv('FRONTEND_URL', 'https://repup-avis.netlify.app')
+CORS(app, origins=[frontend_url], supports_credentials=True, allow_headers=["Authorization", "Content-Type"])
+
 
 # --- CONFIGURATION BDD & JWT ---
 database_url = os.getenv('DATABASE_URL')
@@ -140,7 +143,9 @@ class Review(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     restaurant = db.relationship('Restaurant', back_populates='reviews')
 
-
+# AMÉLIORATION : Il est généralement préférable d'exécuter la création de la base de données
+# via une commande distincte (par exemple avec Flask-Migrate) plutôt qu'à chaque démarrage de l'application.
+# Pour la simplicité de ce projet, nous la laissons ici.
 with app.app_context():
     db.create_all()
 
