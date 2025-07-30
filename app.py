@@ -53,15 +53,12 @@ app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 
 # --- CONFIGURATION DÉFINITIVE DE L'AUTHENTIFICATION ---
 # 1. Spécifier que le token se trouve UNIQUEMENT dans l'en-tête 'Authorization'.
-#    Cela empêche la librairie de chercher des tokens dans les cookies ou ailleurs.
 app.config["JWT_TOKEN_LOCATION"] = ["headers"]
 app.config["JWT_HEADER_NAME"] = "Authorization"
 app.config["JWT_HEADER_TYPE"] = "Bearer"
 
 # 2. Désactiver TOUTES les formes de protection CSRF.
-#    C'est la cause racine de l'erreur 422. En utilisant des tokens Bearer dans les en-têtes,
-#    la protection CSRF est gérée par le navigateur (via la politique Same-Origin)
-#    et n'est pas nécessaire au niveau de la librairie JWT pour ce type d'application.
+#    C'est la cause racine de l'erreur 422.
 app.config["JWT_CSRF_IN_COOKIES"] = False
 app.config["JWT_CSRF_CHECK_FORM"] = False
 
