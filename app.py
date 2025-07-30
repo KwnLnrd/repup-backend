@@ -50,15 +50,20 @@ app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "une-cle-vraiment-secrete-et-longue-pour-la-prod")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
-app.config["JWT_TOKEN_LOCATION"] = ["headers"]
 
-# CORRECTION DÉFINITIVE :
-# Désactivation complète et explicite de toutes les formes de protection CSRF.
-# C'est la cause racine de l'erreur 422. Ces lignes forcent la librairie à ne valider
-# que le token Bearer dans l'en-tête, sans attendre de jetons CSRF supplémentaires.
-app.config["JWT_CSRF_PROTECTION"] = False
-app.config["JWT_CSRF_CHECK_FORM"] = False
+# --- CONFIGURATION DÉFINITIVE DE L'AUTHENTIFICATION ---
+# 1. Spécifier que le token se trouve UNIQUEMENT dans l'en-tête 'Authorization'.
+#    Cela empêche la librairie de chercher des tokens dans les cookies ou ailleurs.
+app.config["JWT_TOKEN_LOCATION"] = ["headers"]
+app.config["JWT_HEADER_NAME"] = "Authorization"
+app.config["JWT_HEADER_TYPE"] = "Bearer"
+
+# 2. Désactiver TOUTES les formes de protection CSRF.
+#    C'est la cause racine de l'erreur 422. En utilisant des tokens Bearer dans les en-têtes,
+#    la protection CSRF est gérée par le navigateur (via la politique Same-Origin)
+#    et n'est pas nécessaire au niveau de la librairie JWT pour ce type d'application.
 app.config["JWT_CSRF_IN_COOKIES"] = False
+app.config["JWT_CSRF_CHECK_FORM"] = False
 
 
 db = SQLAlchemy(app)
