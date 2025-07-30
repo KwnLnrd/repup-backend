@@ -51,8 +51,12 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "une-cle-vraiment-secrete-et-longue-pour-la-prod")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 
-# CORRECTION : Spécifier explicitement que les tokens sont dans les en-têtes
+# CORRECTION : Configuration JWT plus robuste pour éviter les erreurs 422
+# Spécifier explicitement que les tokens sont dans les en-têtes Authorization
 app.config["JWT_TOKEN_LOCATION"] = ["headers"]
+# Désactiver complètement la protection CSRF de JWT-Extended.
+# Une erreur 422 peut survenir si le frontend n'envoie pas le header X-CSRF-TOKEN
+# alors que le backend le demande. On désactive cette vérification pour simplifier l'interaction.
 app.config["JWT_CSRF_PROTECTION"] = False
 
 db = SQLAlchemy(app)
@@ -236,7 +240,6 @@ def generate_unique_slug(name, restaurant_id):
 
 # --- ROUTES PUBLIQUES ---
 
-# NOUVELLE ROUTE: Route racine pour les health checks de Render
 @app.route('/')
 def index():
     return jsonify({"status": "ok", "message": "RepUP API is running."}), 200
