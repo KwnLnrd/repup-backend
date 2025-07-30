@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from flask_jwt_extended import create_access_token, jwt_required, JWTManager, get_current_user, get_jwt_identity
+from dateutil.parser import parse as parse_datetime
+from apify_client import ApifyClient
 
 # --- CONFIGURATION INITIALE ---
 load_dotenv()
@@ -23,6 +25,7 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 def allowed_file(filename):
+    """Vérifie si l'extension du fichier est autorisée."""
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -31,14 +34,17 @@ logging.basicConfig(level=logging.INFO)
 app.logger.setLevel(logging.INFO)
 
 # --- CORS ---
+# Autorise les requêtes cross-origin pour permettre au frontend de communiquer avec l'API
 CORS(app, origins=["*"], supports_credentials=True, allow_headers=["Authorization", "Content-Type"])
 
 # --- CONFIGURATION BDD & JWT ---
 database_url = os.getenv('DATABASE_URL')
 if not database_url:
-    raise RuntimeError("DATABASE_URL is not set in .env file.")
+    raise RuntimeError("DATABASE_URL n'est pas configuré dans le fichier .env.")
 
 # CORRECTION FINALE : Forcer l'utilisation du driver 'psycopg' (v3)
+# SQLAlchemy par défaut cherche 'psycopg2'. En ajoutant '+psycopg', on lui indique
+# explicitement d'utiliser la nouvelle librairie que nous avons installée.
 if database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
 elif database_url.startswith("postgresql://") and "+psycopg" not in database_url:
@@ -110,6 +116,7 @@ class Restaurant(db.Model):
     servers = db.relationship('Server', back_populates='restaurant', cascade="all, delete-orphan")
     dishes = db.relationship('Dish', back_populates='restaurant', cascade="all, delete-orphan")
     tag_selections = db.relationship('RestaurantTag', back_populates='restaurant', cascade="all, delete-orphan")
+    reviews = db.relationship('Review', back_populates='restaurant', cascade="all, delete-orphan")
 
 class RestaurantTag(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -131,15 +138,91 @@ class Dish(db.Model):
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
     restaurant = db.relationship('Restaurant', back_populates='dishes')
 
+class Review(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
+    source = db.Column(db.String(20), nullable=False) # 'google', 'tripadvisor', 'internal'
+    author_name = db.Column(db.String(100))
+    rating = db.Column(db.Float, nullable=False)
+    content = db.Column(db.Text)
+    review_date = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    restaurant = db.relationship('Restaurant', back_populates='reviews')
+
 
 with app.app_context():
     db.create_all()
 
 # --- FONCTIONS HELPERS ---
 
+def save_reviews_to_db(reviews_data, restaurant_id, source):
+    """Sauvegarde les avis parsés dans la BDD, en évitant les doublons."""
+    new_reviews_count = 0
+    for review_item in reviews_data:
+        # Vérifie si un avis similaire existe déjà pour éviter les doublons
+        existing_review = Review.query.filter_by(
+            restaurant_id=restaurant_id, 
+            content=review_item.get('content'),
+            author_name=review_item.get('author_name')
+        ).first()
+
+        if not existing_review and review_item.get('content'):
+            new_review = Review(
+                restaurant_id=restaurant_id,
+                source=source,
+                author_name=review_item.get('author_name'),
+                rating=float(review_item.get('rating', 0)),
+                content=review_item.get('content'),
+                review_date=parse_datetime(review_item.get('review_date')) if review_item.get('review_date') else datetime.utcnow()
+            )
+            db.session.add(new_review)
+            new_reviews_count += 1
+    if new_reviews_count > 0:
+        db.session.commit()
+    app.logger.info(f"{new_reviews_count} nouveaux avis de '{source}' ont été ajoutés.")
+
+
+def scrape_reviews_with_apify(actor_id, target_urls):
+    """Lance un Actor Apify et retourne les résultats."""
+    apify_token = os.getenv('APIFY_API_TOKEN')
+    if not apify_token:
+        app.logger.error("Le token API d'Apify (APIFY_API_TOKEN) est manquant.")
+        return []
+
+    try:
+        client = ApifyClient(apify_token)
+        run_input = {
+            "startUrls": [{"url": url} for url in target_urls],
+            "maxReviews": 50, "language": "fr", "maxConcurrency": 5
+        }
+        app.logger.info(f"Lancement de l'Actor Apify '{actor_id}' pour les URLs: {target_urls}")
+        run = client.actor(actor_id).call(run_input=run_input, wait_secs=120) 
+        app.logger.info(f"Récupération des résultats pour le run ID: {run['defaultDatasetId']}")
+        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        app.logger.info(f"{len(items)} résultats bruts récupérés de l'Actor '{actor_id}'.")
+        return items
+    except Exception as e:
+        app.logger.error(f"Erreur lors de l'exécution de l'Actor Apify '{actor_id}': {e}")
+        return []
+
+def parse_apify_google_reviews(items):
+    """Transforme les résultats bruts de l'Actor Google Maps."""
+    parsed_reviews = []
+    for item in items:
+        if item.get('text'): # On ne garde que les avis qui ont du contenu textuel
+            parsed_reviews.append({
+                'author_name': item.get('name', 'Utilisateur Google'),
+                'rating': item.get('stars', 0),
+                'content': item.get('text'),
+                'review_date': item.get('publishedAtDate', str(datetime.utcnow()))
+            })
+    return parsed_reviews
+
+
 # --- GESTION DE L'UTILISATEUR JWT ---
 @jwt.user_lookup_loader
 def user_lookup_callback(_jwt_header, jwt_data):
+    """Charge un utilisateur depuis la BDD à partir de l'identité du token."""
     identity = jwt_data["sub"]
     return User.query.filter_by(id=int(identity)).one_or_none()
 
@@ -156,38 +239,45 @@ def get_restaurant_id_from_verified_token():
         return None
 
 def generate_unique_slug(name, restaurant_id):
+    """Génère un slug unique pour un restaurant."""
     base_slug = name.lower().replace(' ', '-')
-    base_slug = re.sub(r'[^a-z0-9-]', '', base_slug)
+    base_slug = re.sub(r'[^a-z0-9-]', '', base_slug) # Nettoie le slug
     return f"{base_slug}-{restaurant_id}"
 
 # --- ROUTES PUBLIQUES ---
 
 @app.route('/')
 def index():
-    # Marqueur de version pour vérifier le déploiement
-    return jsonify({"status": "ok", "message": "RepUP API is running.", "version": "1.7-no-analysis"}), 200
+    # Route de base pour vérifier que l'API est en ligne
+    return jsonify({"status": "ok", "message": "RepUP API is running.", "version": "1.6-final"}), 200
 
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
+    """Sert les fichiers téléversés (logos, avatars)."""
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 @app.route('/api/register', methods=['POST'])
 def register():
+    """Crée un nouveau restaurant et un utilisateur associé."""
     data = request.get_json()
     email, password, restaurant_name = data.get('email'), data.get('password'), data.get('restaurant_name')
     if not all([email, password, restaurant_name]): return jsonify({"error": "Données manquantes"}), 400
     if User.query.filter_by(email=email).first(): return jsonify({"error": "Cet email est déjà utilisé"}), 409
     
+    # Crée le restaurant d'abord pour obtenir un ID
     new_restaurant = Restaurant(name=restaurant_name, slug="temporary-slug")
     db.session.add(new_restaurant)
-    db.session.flush()
+    db.session.flush() # Applique la transaction pour que l'ID soit généré
 
+    # Utilise l'ID pour créer un slug unique et permanent
     new_restaurant.slug = generate_unique_slug(restaurant_name, new_restaurant.id)
 
+    # Ajoute toutes les options de tags par défaut pour ce nouveau restaurant
     default_tag_keys = [tag['key'] for category in PRE_TRANSLATED_TAGS for tag in PRE_TRANSLATED_TAGS[category]]
     for key in default_tag_keys:
         db.session.add(RestaurantTag(restaurant_id=new_restaurant.id, tag_key=key))
     
+    # Crée l'utilisateur avec le mot de passe haché
     hashed_password = generate_password_hash(password)
     new_user = User(email=email, password_hash=hashed_password, restaurant_id=new_restaurant.id)
     db.session.add(new_user)
@@ -196,6 +286,7 @@ def register():
 
 @app.route('/api/login', methods=['POST'])
 def login():
+    """Authentifie un utilisateur et retourne un token JWT."""
     data = request.get_json()
     email, password = data.get('email'), data.get('password')
     user = User.query.filter_by(email=email).first()
@@ -206,18 +297,21 @@ def login():
 
 @app.route('/api/public/restaurant/<string:slug>', methods=['GET'])
 def get_restaurant_public_data(slug):
+    """Retourne les données publiques d'un restaurant pour la page d'avis."""
     restaurant = Restaurant.query.filter_by(slug=slug).first_or_404("Restaurant non trouvé")
     servers = Server.query.filter_by(restaurant_id=restaurant.id).all()
     
     selected_tag_keys = {tag.tag_key for tag in restaurant.tag_selections}
     
+    # Construit la liste des tags traduits pour le frontend
     tags_for_frontend = {}
     for category, tags_list in PRE_TRANSLATED_TAGS.items():
         tags_for_frontend[category] = []
         for tag_data in tags_list:
             if tag_data['key'] in selected_tag_keys:
+                # Ne fournit que les traductions activées par le restaurant
                 translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in restaurant.enabled_languages}
-                translations['fr'] = tag_data['fr']
+                translations['fr'] = tag_data['fr'] # Assure que le français est toujours là
                 tags_for_frontend[category].append({
                     "key": tag_data['key'],
                     "translations": translations
@@ -233,6 +327,7 @@ def get_restaurant_public_data(slug):
 
 @app.route('/api/public/menu/<string:slug>', methods=['GET'])
 def get_public_menu(slug):
+    """Retourne le menu public d'un restaurant, groupé par catégorie."""
     restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
     dishes = Dish.query.filter_by(restaurant_id=restaurant.id).all()
     
@@ -245,6 +340,7 @@ def get_public_menu(slug):
 
 @app.route('/api/generate-review', methods=['POST'])
 def generate_review_proxy():
+    """Proxy vers l'API OpenAI pour générer un texte d'avis."""
     api_key = os.getenv('OPENAI_API_KEY')
     if not api_key:
         return jsonify({"error": "La clé API OpenAI n'est pas configurée sur le serveur."}), 500
@@ -252,15 +348,17 @@ def generate_review_proxy():
     prompt = data.get('prompt')
     if not prompt:
         return jsonify({"error": "Le prompt est manquant."}), 400
+    
     openai_url = 'https://api.openai.com/v1/chat/completions'
     headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
     payload = {
         "model": "gpt-3.5-turbo",
         "messages": [{"role": "system", "content": "Tu es un assistant IA qui rédige des avis de restaurant positifs et engageants."}, {"role": "user", "content": prompt}]
     }
+    
     try:
         response = requests.post(openai_url, headers=headers, json=payload, timeout=20)
-        response.raise_for_status()
+        response.raise_for_status() # Lève une exception pour les codes d'erreur HTTP
         openai_data = response.json()
         review_text = openai_data['choices'][0]['message']['content'].strip()
         return jsonify({"review": review_text})
@@ -276,21 +374,20 @@ def generate_review_proxy():
 @app.route('/api/test-auth', methods=['GET'])
 @jwt_required()
 def test_auth():
+    """Route simple pour tester la validité d'un token JWT."""
     user_id = get_jwt_identity()
-    app.logger.info(f"Auth test successful for user ID: {user_id}")
-    return jsonify({"message": f"Authentication successful for user_id {user_id}"}), 200
+    app.logger.info(f"Test d'authentification réussi pour l'utilisateur ID: {user_id}")
+    return jsonify({"message": f"Authentification réussie pour l'user_id {user_id}"}), 200
 
 @app.route('/api/restaurant', methods=['GET', 'PUT'])
 @jwt_required()
 def manage_restaurant_settings():
+    """Gère les paramètres du restaurant (GET pour lire, PUT pour mettre à jour)."""
     restaurant_id = get_restaurant_id_from_verified_token()
-    
-    if not restaurant_id:
-        return jsonify({"error": "Token invalide ou utilisateur non trouvé"}), 401
+    if not restaurant_id: return jsonify({"error": "Token invalide ou utilisateur non trouvé"}), 401
 
     restaurant = db.session.get(Restaurant, restaurant_id)
-    if not restaurant: 
-        return jsonify({"error": "Restaurant non trouvé pour cet utilisateur"}), 404
+    if not restaurant: return jsonify({"error": "Restaurant non trouvé pour cet utilisateur"}), 404
     
     if request.method == 'GET':
         return jsonify({
@@ -325,6 +422,7 @@ def manage_restaurant_settings():
 @app.route('/api/options', methods=['GET', 'POST'])
 @jwt_required()
 def manage_options():
+    """Gère les options de tags pour un restaurant."""
     restaurant_id = get_restaurant_id_from_verified_token()
     if not restaurant_id: return jsonify({"error": "Token invalide"}), 401
     
@@ -339,6 +437,7 @@ def manage_options():
     if request.method == 'POST':
         data = request.get_json()
         new_selected_keys = data.get('selected_keys', [])
+        # Supprime les anciennes sélections et ajoute les nouvelles
         RestaurantTag.query.filter_by(restaurant_id=restaurant_id).delete()
         for key in new_selected_keys:
             db.session.add(RestaurantTag(restaurant_id=restaurant_id, tag_key=key))
@@ -348,6 +447,7 @@ def manage_options():
 @app.route('/api/servers', methods=['GET', 'POST'])
 @jwt_required()
 def manage_servers():
+    """Gère les membres de l'équipe (serveurs)."""
     restaurant_id = get_restaurant_id_from_verified_token()
     if not restaurant_id: return jsonify({"error": "Token invalide"}), 401
 
@@ -372,6 +472,7 @@ def manage_servers():
 @app.route('/api/servers/<int:server_id>', methods=['PUT', 'DELETE'])
 @jwt_required()
 def manage_single_server(server_id):
+    """Met à jour ou supprime un membre de l'équipe spécifique."""
     restaurant_id = get_restaurant_id_from_verified_token()
     if not restaurant_id: return jsonify({"error": "Token invalide"}), 401
     
@@ -389,11 +490,12 @@ def manage_single_server(server_id):
     if request.method == 'DELETE':
         db.session.delete(server)
         db.session.commit()
-        return '', 204
+        return '', 204 # Pas de contenu à retourner pour une suppression
 
 @app.route('/api/menu', methods=['GET', 'POST'])
 @jwt_required()
 def manage_menu():
+    """Gère le menu du restaurant."""
     restaurant_id = get_restaurant_id_from_verified_token()
     if not restaurant_id: return jsonify({"error": "Token invalide"}), 401
 
@@ -416,6 +518,7 @@ def manage_menu():
 @app.route('/api/menu/<int:dish_id>', methods=['PUT', 'DELETE'])
 @jwt_required()
 def manage_single_dish(dish_id):
+    """Met à jour ou supprime un plat spécifique."""
     restaurant_id = get_restaurant_id_from_verified_token()
     if not restaurant_id: return jsonify({"error": "Token invalide"}), 401
 
@@ -431,6 +534,88 @@ def manage_single_dish(dish_id):
         db.session.commit()
         return '', 204
 
+@app.route('/api/strategic-analysis', methods=['POST'])
+@jwt_required()
+def trigger_strategic_analysis():
+    """Lance le scraping des avis et la génération de l'analyse par l'IA."""
+    restaurant_id = get_restaurant_id_from_verified_token()
+    if not restaurant_id: return jsonify({"error": "Token invalide"}), 401
+
+    restaurant = db.session.get(Restaurant, restaurant_id)
+    if not restaurant: return jsonify({"error": "Restaurant non trouvé"}), 404
+
+    app.logger.info(f"Début de l'analyse pour le restaurant ID: {restaurant_id}")
+    # Supprime les anciens avis externes pour les rafraîchir
+    Review.query.filter(
+        Review.restaurant_id == restaurant_id,
+        Review.source.in_(['google', 'tripadvisor'])
+    ).delete()
+    db.session.commit()
+
+    if restaurant.google_link:
+        app.logger.info(f"Lien Google trouvé: {restaurant.google_link}.")
+        actor_id = os.getenv("GOOGLE_MAPS_ACTOR_ID", "nwua9Gu5YrADL7ZDj")
+        raw_google_reviews = scrape_reviews_with_apify(actor_id, [restaurant.google_link])
+        
+        # Le format de retour d'Apify peut varier
+        reviews_to_parse = []
+        if raw_google_reviews and isinstance(raw_google_reviews, list) and len(raw_google_reviews) > 0:
+            place_data = raw_google_reviews[0]
+            if 'reviews' in place_data and isinstance(place_data['reviews'], list):
+                reviews_to_parse = place_data['reviews']
+            else:
+                 reviews_to_parse = raw_google_reviews
+        
+        if reviews_to_parse:
+            parsed_reviews = parse_apify_google_reviews(reviews_to_parse)
+            save_reviews_to_db(parsed_reviews, restaurant_id, 'google')
+            app.logger.info(f"{len(parsed_reviews)} avis Google traités.")
+        else:
+            app.logger.warning("Aucun avis à parser trouvé pour Google.")
+            
+    all_reviews = Review.query.filter_by(restaurant_id=restaurant_id).order_by(Review.created_at.desc()).all()
+    if not all_reviews:
+        return jsonify({"error": "Aucun avis trouvé pour générer une analyse."}), 404
+
+    # Prépare le prompt pour l'IA
+    review_contents = [r.content for r in all_reviews if r.content]
+    prompt = f"""
+    Analyse la liste d'avis suivante pour le restaurant "{restaurant.name}" et fournis une analyse stratégique complète au format JSON valide.
+    Avis: {json.dumps(review_contents[:100])}
+    ---
+    JSON attendu:
+    {{
+      "executive_summary": "Résumé de 2-3 phrases.",
+      "strengths": ["Point fort 1", "Point fort 2"],
+      "weaknesses": ["Axe d'amélioration 1", "Axe d'amélioration 2"],
+      "opportunities": ["Opportunité 1"],
+      "proactive_suggestions": ["Marketing: Suggestion 1", "Opérationnel: Suggestion 2"]
+    }}
+    """
+    
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key: return jsonify({"error": "La clé API pour l'IA n'est pas configurée."}), 500
+
+    openai_url = 'https://api.openai.com/v1/chat/completions'
+    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
+    payload = { 
+        "model": "gpt-4-turbo", 
+        "messages": [{"role": "user", "content": prompt}], 
+        "response_format": { "type": "json_object" } 
+    }
+    
+    try:
+        response = requests.post(openai_url, headers=headers, json=payload, timeout=90)
+        response.raise_for_status()
+        analysis_data = json.loads(response.json()['choices'][0]['message']['content'])
+        return jsonify(analysis_data)
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "La génération de l'analyse a pris trop de temps."}), 504
+    except Exception as e:
+        app.logger.error(f"Erreur API OpenAI: {e}")
+        return jsonify({"error": "Erreur lors de la communication avec l'IA."}), 502
+
 
 if __name__ == '__main__':
+    # Point d'entrée pour le développement local
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)

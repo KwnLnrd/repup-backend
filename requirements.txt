@@ -6,4 +6,5 @@ psycopg[binary]
 gunicorn==22.0.0
 requests==2.31.0
 Flask-JWT-Extended==4.6.0
-
+python-dateutil==2.9.0
+apify-client==1.4.0
