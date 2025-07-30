@@ -50,6 +50,9 @@ app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "une-cle-vraiment-secrete-et-longue-pour-la-prod")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
+
+# CORRECTION : Spécifier explicitement que les tokens sont dans les en-têtes
+app.config["JWT_TOKEN_LOCATION"] = ["headers"]
 app.config["JWT_CSRF_PROTECTION"] = False
 
 db = SQLAlchemy(app)
