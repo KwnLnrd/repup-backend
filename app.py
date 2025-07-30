@@ -50,6 +50,8 @@ app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "une-cle-vraiment-secrete-et-longue-pour-la-prod")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
+# CORRECTION FINALE: Désactivation de la protection CSRF qui cause l'erreur 422
+app.config["JWT_CSRF_PROTECTION"] = False
 
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
@@ -213,18 +215,15 @@ def user_lookup_callback(_jwt_header, jwt_data):
     identity = jwt_data["sub"]
     return User.query.filter_by(id=int(identity)).one_or_none()
 
-# CORRECTION: Remplacement de get_current_user() par une fonction manuelle plus robuste
 def get_restaurant_id_from_verified_token():
     """Vérifie le token et retourne l'ID du restaurant associé."""
     try:
-        # Cette fonction va déclencher la vérification du token par Flask-JWT-Extended
         user_id = get_jwt_identity() 
         if not user_id:
             return None
         user = User.query.filter_by(id=user_id).first()
         return user.restaurant_id if user else None
     except Exception as e:
-        # Log l'erreur pour le débogage mais ne crashe pas l'application
         app.logger.error(f"Erreur lors de la vérification du token: {e}")
         return None
 
@@ -340,17 +339,12 @@ def generate_review_proxy():
 
 # --- ROUTES PROTÉGÉES ---
 
-# CORRECTION MAJEURE: Modification de la route pour éviter l'erreur 422
 @app.route('/api/restaurant', methods=['GET', 'PUT'])
-@jwt_required() # On garde le décorateur pour la protection de base
+@jwt_required()
 def manage_restaurant_settings():
-    # Utilisation de la nouvelle fonction helper pour obtenir l'ID du restaurant
     restaurant_id = get_restaurant_id_from_verified_token()
     
-    # Vérification explicite que l'ID a bien été trouvé
     if not restaurant_id:
-        # C'est ici que l'erreur 422 se produisait implicitement. 
-        # Maintenant, nous retournons une erreur 401 claire.
         return jsonify({"error": "Token invalide ou utilisateur non trouvé"}), 401
 
     restaurant = db.session.get(Restaurant, restaurant_id)
