@@ -40,25 +40,19 @@ database_url = os.getenv('DATABASE_URL')
 if not database_url:
     raise RuntimeError("DATABASE_URL is not set in .env file.")
 
+# CORRECTION DÉFINITIVE : Assurer la compatibilité avec psycopg2
+# La librairie psycopg2 attend un URI commençant par "postgresql://", et non "postgres://".
+# Cette ligne effectue la conversion nécessaire pour que SQLAlchemy se connecte correctement.
 if database_url.startswith("postgres://"):
-    database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
-elif database_url.startswith("postgresql://") and "+psycopg" not in database_url:
-    database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
-
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "une-cle-vraiment-secrete-et-longue-pour-la-prod")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 
-# --- CONFIGURATION DÉFINITIVE DE L'AUTHENTIFICATION ---
-# 1. Spécifier que le token se trouve UNIQUEMENT dans l'en-tête 'Authorization'.
+# --- CONFIGURATION DE SÉCURITÉ JWT ---
 app.config["JWT_TOKEN_LOCATION"] = ["headers"]
-app.config["JWT_HEADER_NAME"] = "Authorization"
-app.config["JWT_HEADER_TYPE"] = "Bearer"
-
-# 2. Désactiver TOUTES les formes de protection CSRF.
-#    C'est la cause racine de l'erreur 422.
 app.config["JWT_CSRF_IN_COOKIES"] = False
 app.config["JWT_CSRF_CHECK_FORM"] = False
 
@@ -246,7 +240,8 @@ def generate_unique_slug(name, restaurant_id):
 
 @app.route('/')
 def index():
-    return jsonify({"status": "ok", "message": "RepUP API is running."}), 200
+    # Marqueur de version pour vérifier le déploiement
+    return jsonify({"status": "ok", "message": "RepUP API is running.", "version": "1.2-final"}), 200
 
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
