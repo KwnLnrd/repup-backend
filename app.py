@@ -50,6 +50,13 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "une-cle-vraiment-secrete-et-longue-pour-la-prod")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 
+# --- CORRECTIF : Configuration explicite de la localisation du token et désactivation CSRF ---
+# Indique que le token doit être cherché dans les headers (ex: 'Authorization: Bearer <token>')
+app.config["JWT_TOKEN_LOCATION"] = ["headers"]
+# Désactive la protection CSRF qui peut causer des erreurs 422 dans une configuration API pure.
+app.config["JWT_CSRF_PROTECTION"] = False
+
+
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 
