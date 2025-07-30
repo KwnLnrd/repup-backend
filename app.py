@@ -19,7 +19,6 @@ load_dotenv()
 app = Flask(__name__)
 
 # --- CONFIGURATION DU DOSSIER DE TÉLÉVERSEMENT ---
-# Utilisation d'un chemin absolu pour la robustesse en production
 UPLOAD_FOLDER = os.path.abspath(os.path.join(os.path.dirname(__file__), 'uploads'))
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
@@ -41,7 +40,6 @@ database_url = os.getenv('DATABASE_URL')
 if not database_url:
     raise RuntimeError("DATABASE_URL is not set in .env file.")
 
-# CORRECTION: S'assurer que SQLAlchemy utilise le driver 'psycopg' (v3) et non 'psycopg2'
 if database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
 elif database_url.startswith("postgresql://") and "+psycopg" not in database_url:
@@ -144,15 +142,11 @@ class Review(db.Model):
 with app.app_context():
     db.create_all()
 
-# --- FONCTIONS HELPERS POUR LE SCRAPING ET LA SAUVEGARDE ---
+# --- FONCTIONS HELPERS ---
 
 def save_reviews_to_db(reviews_data, restaurant_id, source):
-    """
-    Sauvegarde une liste d'avis parsés dans la base de données, en évitant les doublons.
-    """
     new_reviews_count = 0
     for review_item in reviews_data:
-        # Vérification plus robuste pour éviter les doublons basés sur le contenu et l'auteur
         existing_review = Review.query.filter_by(
             restaurant_id=restaurant_id, 
             content=review_item.get('content'),
@@ -176,44 +170,26 @@ def save_reviews_to_db(reviews_data, restaurant_id, source):
 
 
 def scrape_reviews_with_apify(actor_id, target_urls):
-    """
-    Lance un Actor Apify, attend la fin de l'exécution et retourne les résultats.
-    """
     apify_token = os.getenv('APIFY_API_TOKEN')
     if not apify_token:
-        app.logger.error("Le token API d'Apify (APIFY_API_TOKEN) est manquant dans le fichier .env.")
+        app.logger.error("APIFY_API_TOKEN manquant dans .env.")
         return []
-
     try:
         client = ApifyClient(apify_token)
-        # Configuration optimisée pour des résultats rapides et pertinents
-        run_input = {
-            "startUrls": [{"url": url} for url in target_urls],
-            "maxReviews": 50, # On peut augmenter si besoin
-            "language": "fr",
-            "maxConcurrency": 5
-        }
-        
-        app.logger.info(f"Lancement de l'Actor Apify '{actor_id}' pour les URLs: {target_urls}")
+        run_input = { "startUrls": [{"url": url} for url in target_urls], "maxReviews": 50, "language": "fr" }
+        app.logger.info(f"Lancement de l'Actor Apify '{actor_id}'...")
         run = client.actor(actor_id).call(run_input=run_input, wait_secs=120) 
-        
         app.logger.info(f"Récupération des résultats pour le run ID: {run['defaultDatasetId']}")
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
-        
         app.logger.info(f"{len(items)} résultats bruts récupérés de l'Actor '{actor_id}'.")
         return items
-
     except Exception as e:
         app.logger.error(f"Erreur lors de l'exécution de l'Actor Apify '{actor_id}': {e}")
         return []
 
 def parse_apify_google_reviews(items):
-    """
-    Transforme les résultats bruts de l'Actor Google Maps en notre format standard.
-    """
     parsed_reviews = []
     for item in items:
-        # On s'assure que l'avis a du contenu textuel pour être utile
         if item.get('text'):
             parsed_reviews.append({
                 'author_name': item.get('name', 'Utilisateur Google'),
@@ -223,8 +199,6 @@ def parse_apify_google_reviews(items):
             })
     return parsed_reviews
 
-
-# --- GESTION DE L'UTILISATEUR JWT ---
 @jwt.user_lookup_loader
 def user_lookup_callback(_jwt_header, jwt_data):
     identity = jwt_data["sub"]
@@ -232,13 +206,10 @@ def user_lookup_callback(_jwt_header, jwt_data):
 
 def get_restaurant_id_from_token():
     current_user = get_current_user()
-    if current_user:
-        return current_user.restaurant_id
-    return None
+    return current_user.restaurant_id if current_user else None
 
 def generate_unique_slug(name, restaurant_id):
-    base_slug = name.lower().replace(' ', '-')
-    base_slug = re.sub(r'[^a-z0-9-]', '', base_slug)
+    base_slug = re.sub(r'[^a-z0-9-]', '', name.lower().replace(' ', '-'))
     return f"{base_slug}-{restaurant_id}"
 
 # --- ROUTES PUBLIQUES ---
@@ -256,9 +227,8 @@ def register():
     new_restaurant = Restaurant(name=restaurant_name, slug="temporary-slug")
     db.session.add(new_restaurant)
     db.session.flush()
-
     new_restaurant.slug = generate_unique_slug(restaurant_name, new_restaurant.id)
-
+    
     default_tag_keys = [tag['key'] for category in PRE_TRANSLATED_TAGS for tag in PRE_TRANSLATED_TAGS[category]]
     for key in default_tag_keys:
         db.session.add(RestaurantTag(restaurant_id=new_restaurant.id, tag_key=key))
@@ -283,76 +253,54 @@ def login():
 def get_restaurant_public_data(slug):
     restaurant = Restaurant.query.filter_by(slug=slug).first_or_404("Restaurant non trouvé")
     servers = Server.query.filter_by(restaurant_id=restaurant.id).all()
-    
     selected_tag_keys = {tag.tag_key for tag in restaurant.tag_selections}
-    
     tags_for_frontend = {}
     for category, tags_list in PRE_TRANSLATED_TAGS.items():
-        tags_for_frontend[category] = []
-        for tag_data in tags_list:
-            if tag_data['key'] in selected_tag_keys:
-                translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in restaurant.enabled_languages}
-                translations['fr'] = tag_data['fr'] # Assurer que le français est toujours là
-                tags_for_frontend[category].append({
-                    "key": tag_data['key'],
-                    "translations": translations
-                })
-
+        tags_for_frontend[category] = [
+            {"key": tag_data['key'], "translations": {lang: tag_data.get(lang, tag_data['fr']) for lang in restaurant.enabled_languages}}
+            for tag_data in tags_list if tag_data['key'] in selected_tag_keys
+        ]
     return jsonify({
         "name": restaurant.name, "logoUrl": restaurant.logo_url, "primaryColor": restaurant.primary_color,
         "links": {"google": restaurant.google_link, "tripadvisor": restaurant.tripadvisor_link},
         "servers": [{"id": s.id, "name": s.name, "avatar": s.avatar_url} for s in servers],
-        "languages": restaurant.enabled_languages,
-        "tags": tags_for_frontend
+        "languages": restaurant.enabled_languages, "tags": tags_for_frontend
     })
 
 @app.route('/api/public/menu/<string:slug>', methods=['GET'])
 def get_public_menu(slug):
     restaurant = Restaurant.query.filter_by(slug=slug).first_or_404()
     dishes = Dish.query.filter_by(restaurant_id=restaurant.id).all()
-    
     menu_by_category = {}
     for dish in dishes:
-        if dish.category not in menu_by_category:
-            menu_by_category[dish.category] = []
-        menu_by_category[dish.category].append({"id": dish.id, "name": dish.name})
+        menu_by_category.setdefault(dish.category, []).append({"id": dish.id, "name": dish.name})
     return jsonify(menu_by_category)
 
 @app.route('/api/generate-review', methods=['POST'])
 def generate_review_proxy():
     api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key:
-        return jsonify({"error": "La clé API OpenAI n'est pas configurée sur le serveur."}), 500
+    if not api_key: return jsonify({"error": "Clé API OpenAI non configurée."}), 500
     data = request.get_json()
     prompt = data.get('prompt')
-    if not prompt:
-        return jsonify({"error": "Le prompt est manquant."}), 400
-    openai_url = 'https://api.openai.com/v1/chat/completions'
-    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
-    payload = {
-        "model": "gpt-3.5-turbo",
-        "messages": [{"role": "system", "content": "Tu es un assistant IA qui rédige des avis de restaurant positifs et engageants."}, {"role": "user", "content": prompt}]
-    }
+    if not prompt: return jsonify({"error": "Prompt manquant."}), 400
+    
     try:
-        response = requests.post(openai_url, headers=headers, json=payload, timeout=20)
+        response = requests.post('https://api.openai.com/v1/chat/completions', 
+            headers={'Authorization': f'Bearer {api_key}'}, 
+            json={"model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": prompt}]}, 
+            timeout=20)
         response.raise_for_status()
-        openai_data = response.json()
-        review_text = openai_data['choices'][0]['message']['content'].strip()
-        return jsonify({"review": review_text})
-    except requests.exceptions.RequestException as e:
-        app.logger.error(f"Erreur lors de l'appel à l'API OpenAI: {e}")
-        return jsonify({"error": f"Erreur de communication avec l'API OpenAI: {e}"}), 502
-    except (KeyError, IndexError) as e:
-        app.logger.error(f"Réponse inattendue de l'API OpenAI: {openai_data}")
-        return jsonify({"error": "Format de réponse inattendu de la part d'OpenAI."}), 500
+        return jsonify({"review": response.json()['choices'][0]['message']['content'].strip()})
+    except Exception as e:
+        app.logger.error(f"Erreur API OpenAI: {e}")
+        return jsonify({"error": "Erreur de communication avec l'API OpenAI."}), 502
 
 # --- ROUTES PROTÉGÉES ---
 
 @app.route('/api/restaurant', methods=['GET', 'PUT'])
 @jwt_required()
 def manage_restaurant_settings():
-    restaurant_id = get_restaurant_id_from_token()
-    restaurant = db.session.get(Restaurant, restaurant_id)
+    restaurant = db.session.get(Restaurant, get_restaurant_id_from_token())
     if not restaurant: return jsonify({"error": "Restaurant non trouvé"}), 404
     
     if request.method == 'GET':
@@ -362,52 +310,36 @@ def manage_restaurant_settings():
             "tripadvisorLink": restaurant.tripadvisor_link, "enabledLanguages": restaurant.enabled_languages
         })
     
-    elif request.method == 'PUT':
-        data = request.form
-        restaurant.name = data.get('name', restaurant.name)
-        restaurant.primary_color = data.get('primaryColor', restaurant.primary_color)
-        restaurant.google_link = data.get('googleLink', restaurant.google_link)
-        restaurant.tripadvisor_link = data.get('tripadvisorLink', restaurant.tripadvisor_link)
-        
-        if 'enabledLanguages' in data:
-            try:
-                restaurant.enabled_languages = json.loads(data.get('enabledLanguages'))
-            except json.JSONDecodeError:
-                return jsonify({"error": "Format JSON invalide pour les langues"}), 400
-
-        if 'logo' in request.files:
-            file = request.files['logo']
-            if file and file.filename != '' and allowed_file(file.filename):
-                filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
-                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-                restaurant.logo_url = f'/uploads/{filename}'
-        
-        db.session.commit()
-        return jsonify({"message": "Paramètres mis à jour", "logoUrl": restaurant.logo_url})
+    data = request.form
+    restaurant.name = data.get('name', restaurant.name)
+    restaurant.primary_color = data.get('primaryColor', restaurant.primary_color)
+    restaurant.google_link = data.get('googleLink', restaurant.google_link)
+    restaurant.tripadvisor_link = data.get('tripadvisorLink', restaurant.tripadvisor_link)
+    if 'enabledLanguages' in data:
+        restaurant.enabled_languages = json.loads(data.get('enabledLanguages'))
+    if 'logo' in request.files:
+        file = request.files['logo']
+        if file and allowed_file(file.filename):
+            filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+            restaurant.logo_url = f'/uploads/{filename}'
+    db.session.commit()
+    return jsonify({"message": "Paramètres mis à jour", "logoUrl": restaurant.logo_url})
 
 @app.route('/api/options', methods=['GET', 'POST'])
 @jwt_required()
 def manage_options():
     restaurant_id = get_restaurant_id_from_token()
     if request.method == 'GET':
-        selected_tags = db.session.query(RestaurantTag.tag_key).filter_by(restaurant_id=restaurant_id).all()
-        selected_keys = [key for (key,) in selected_tags]
-        return jsonify({
-            "available_tags": PRE_TRANSLATED_TAGS,
-            "selected_keys": selected_keys
-        })
+        selected_keys = [tag.tag_key for tag in RestaurantTag.query.filter_by(restaurant_id=restaurant_id).all()]
+        return jsonify({"available_tags": PRE_TRANSLATED_TAGS, "selected_keys": selected_keys})
     
-    if request.method == 'POST':
-        data = request.get_json()
-        new_selected_keys = data.get('selected_keys', [])
-        
-        RestaurantTag.query.filter_by(restaurant_id=restaurant_id).delete()
-        
-        for key in new_selected_keys:
-            db.session.add(RestaurantTag(restaurant_id=restaurant_id, tag_key=key))
-            
-        db.session.commit()
-        return jsonify({"message": "Options mises à jour avec succès."}), 200
+    new_keys = request.get_json().get('selected_keys', [])
+    RestaurantTag.query.filter_by(restaurant_id=restaurant_id).delete()
+    for key in new_keys:
+        db.session.add(RestaurantTag(restaurant_id=restaurant_id, tag_key=key))
+    db.session.commit()
+    return jsonify({"message": "Options mises à jour."}), 200
 
 @app.route('/api/servers', methods=['GET', 'POST'])
 @jwt_required()
@@ -416,26 +348,25 @@ def manage_servers():
     if request.method == 'GET':
         servers = Server.query.filter_by(restaurant_id=restaurant_id).order_by(Server.name).all()
         return jsonify([{"id": s.id, "name": s.name, "avatar_url": s.avatar_url} for s in servers])
-    if request.method == 'POST':
-        name = request.form.get('name')
-        if not name: return jsonify({"error": "Le nom est requis"}), 400
-        avatar_url = None
-        if 'avatar' in request.files:
-            file = request.files['avatar']
-            if file and allowed_file(file.filename):
-                filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
-                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-                avatar_url = f'/uploads/{filename}'
-        new_server = Server(name=name, avatar_url=avatar_url, restaurant_id=restaurant_id)
-        db.session.add(new_server)
-        db.session.commit()
-        return jsonify({"id": new_server.id, "name": new_server.name, "avatar_url": new_server.avatar_url}), 201
+    
+    name = request.form.get('name')
+    if not name: return jsonify({"error": "Le nom est requis"}), 400
+    avatar_url = None
+    if 'avatar' in request.files:
+        file = request.files['avatar']
+        if file and allowed_file(file.filename):
+            filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+            avatar_url = f'/uploads/{filename}'
+    new_server = Server(name=name, avatar_url=avatar_url, restaurant_id=restaurant_id)
+    db.session.add(new_server)
+    db.session.commit()
+    return jsonify({"id": new_server.id, "name": new_server.name, "avatar_url": new_server.avatar_url}), 201
 
 @app.route('/api/servers/<int:server_id>', methods=['PUT', 'DELETE'])
 @jwt_required()
 def manage_single_server(server_id):
-    restaurant_id = get_restaurant_id_from_token()
-    server = Server.query.filter_by(id=server_id, restaurant_id=restaurant_id).first_or_404()
+    server = Server.query.filter_by(id=server_id, restaurant_id=get_restaurant_id_from_token()).first_or_404()
     if request.method == 'PUT':
         server.name = request.form.get('name', server.name)
         if 'avatar' in request.files:
@@ -446,10 +377,9 @@ def manage_single_server(server_id):
                 server.avatar_url = f'/uploads/{filename}'
         db.session.commit()
         return jsonify({"id": server.id, "name": server.name, "avatar_url": server.avatar_url})
-    if request.method == 'DELETE':
-        db.session.delete(server)
-        db.session.commit()
-        return '', 204
+    db.session.delete(server)
+    db.session.commit()
+    return '', 204
 
 @app.route('/api/menu', methods=['GET', 'POST'])
 @jwt_required()
@@ -459,162 +389,119 @@ def manage_menu():
         dishes = Dish.query.filter_by(restaurant_id=restaurant_id).order_by(Dish.category, Dish.name).all()
         menu_by_category = {}
         for dish in dishes:
-            if dish.category not in menu_by_category: menu_by_category[dish.category] = []
-            menu_by_category[dish.category].append({"id": dish.id, "name": dish.name})
+            menu_by_category.setdefault(dish.category, []).append({"id": dish.id, "name": dish.name})
         return jsonify(menu_by_category)
-    if request.method == 'POST':
-        data = request.get_json()
-        if not data.get('name') or not data.get('category'):
-            return jsonify({"error": "Le nom et la catégorie sont requis"}), 400
-        new_dish = Dish(name=data['name'], category=data['category'], restaurant_id=restaurant_id)
-        db.session.add(new_dish)
-        db.session.commit()
-        return jsonify({"id": new_dish.id, "name": new_dish.name, "category": new_dish.category}), 201
+    
+    data = request.get_json()
+    if not data.get('name') or not data.get('category'): return jsonify({"error": "Nom et catégorie requis"}), 400
+    new_dish = Dish(name=data['name'], category=data['category'], restaurant_id=restaurant_id)
+    db.session.add(new_dish)
+    db.session.commit()
+    return jsonify({"id": new_dish.id, "name": new_dish.name, "category": new_dish.category}), 201
 
 @app.route('/api/menu/<int:dish_id>', methods=['PUT', 'DELETE'])
 @jwt_required()
 def manage_single_dish(dish_id):
-    restaurant_id = get_restaurant_id_from_token()
-    dish = Dish.query.filter_by(id=dish_id, restaurant_id=restaurant_id).first_or_404()
+    dish = Dish.query.filter_by(id=dish_id, restaurant_id=get_restaurant_id_from_token()).first_or_404()
     if request.method == 'PUT':
         data = request.get_json()
         dish.name = data.get('name', dish.name)
         dish.category = data.get('category', dish.category)
         db.session.commit()
         return jsonify({"id": dish.id, "name": dish.name, "category": dish.category})
-    if request.method == 'DELETE':
-        db.session.delete(dish)
-        db.session.commit()
-        return '', 204
+    db.session.delete(dish)
+    db.session.commit()
+    return '', 204
 
-# --- ROUTE POUR L'ONGLET "TOUS LES AVIS" ---
 @app.route('/api/reviews', methods=['GET'])
 @jwt_required()
 def get_all_reviews():
     restaurant_id = get_restaurant_id_from_token()
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 10, type=int)
-    
     reviews_query = Review.query.filter_by(restaurant_id=restaurant_id).order_by(Review.review_date.desc())
     paginated_reviews = reviews_query.paginate(page=page, per_page=per_page, error_out=False)
-    
-    reviews_data = []
-    for review in paginated_reviews.items:
-        reviews_data.append({
-            "id": review.id,
-            "source": review.source,
-            "author_name": review.author_name,
-            "rating": review.rating,
-            "content": review.content,
-            "review_date": review.review_date.isoformat() if review.review_date else None
-        })
-        
+    reviews_data = [{
+        "id": r.id, "source": r.source, "author_name": r.author_name, "rating": r.rating,
+        "content": r.content, "review_date": r.review_date.isoformat() if r.review_date else None
+    } for r in paginated_reviews.items]
     return jsonify({
-        "reviews": reviews_data,
-        "total_pages": paginated_reviews.pages,
-        "current_page": paginated_reviews.page,
-        "has_next": paginated_reviews.has_next,
-        "has_prev": paginated_reviews.has_prev
+        "reviews": reviews_data, "total_pages": paginated_reviews.pages,
+        "current_page": paginated_reviews.page, "has_next": paginated_reviews.has_next
     })
 
-# --- ROUTE D'ANALYSE STRATÉGIQUE ---
-@app.route('/api/strategic-analysis', methods=['POST'])
+# --- NOUVELLE ROUTE POUR LA TRADUCTION ---
+@app.route('/api/translate', methods=['POST'])
 @jwt_required()
-def trigger_strategic_analysis():
-    restaurant_id = get_restaurant_id_from_token()
-    restaurant = db.session.get(Restaurant, restaurant_id)
-    if not restaurant:
-        return jsonify({"error": "Restaurant non trouvé"}), 404
+def translate_text():
+    data = request.get_json()
+    text_to_translate = data.get('text')
+    target_language = data.get('language', 'français') # Français par défaut
 
-    app.logger.info(f"Début de l'analyse stratégique pour le restaurant ID: {restaurant_id} ({restaurant.name})")
+    if not text_to_translate:
+        return jsonify({"error": "Le texte à traduire est manquant."}), 400
 
-    # Étape 1: Nettoyer les anciens avis scrapés pour rafraîchir les données
-    app.logger.info("Nettoyage des anciens avis externes...")
-    Review.query.filter(
-        Review.restaurant_id == restaurant_id,
-        Review.source.in_(['google', 'tripadvisor'])
-    ).delete()
-    db.session.commit()
-
-    # Étape 2: Lancer le scraping des nouvelles données
-    if restaurant.google_link:
-        app.logger.info(f"Lien Google trouvé: {restaurant.google_link}. Lancement du scraping.")
-        actor_id = os.getenv("GOOGLE_MAPS_ACTOR_ID", "nwua9Gu5YrADL7ZDj")
-        raw_google_reviews = scrape_reviews_with_apify(actor_id, [restaurant.google_link])
-        
-        reviews_to_parse = []
-        if raw_google_reviews and isinstance(raw_google_reviews, list) and len(raw_google_reviews) > 0:
-            place_data = raw_google_reviews[0]
-            if 'reviews' in place_data and isinstance(place_data['reviews'], list):
-                reviews_to_parse = place_data['reviews']
-                app.logger.info(f"Trouvé {len(reviews_to_parse)} avis dans l'objet principal.")
-            else:
-                 reviews_to_parse = raw_google_reviews
-                 app.logger.info("Format de scraper non standard détecté, traitement comme une liste plate.")
-        
-        if reviews_to_parse:
-            parsed_reviews = parse_apify_google_reviews(reviews_to_parse)
-            save_reviews_to_db(parsed_reviews, restaurant_id, 'google')
-            app.logger.info(f"{len(parsed_reviews)} avis Google ont été traités et sauvegardés.")
-        else:
-            app.logger.warning("Aucun avis à parser trouvé dans les données scrapées.")
-            
-    else:
-        app.logger.warning("Aucun lien Google configuré pour ce restaurant.")
+    prompt = f"Traduis le commentaire de restaurant suivant en {target_language} de manière naturelle et fluide:\n\n---\n{text_to_translate}\n---"
     
-    # Étape 3: Récupérer tous les avis
-    all_reviews = Review.query.filter_by(restaurant_id=restaurant_id).order_by(Review.created_at.desc()).all()
-    if not all_reviews:
-        return jsonify({"error": "Aucun avis n'a été trouvé pour générer une analyse."}), 404
-
-    app.logger.info(f"Total de {len(all_reviews)} avis trouvés pour l'analyse.")
-    review_contents = [r.content for r in all_reviews if r.content]
-
-    # Étape 4: Préparer le prompt pour l'IA
-    prompt = f"""
-    En tant que consultant expert pour restaurants, analyse la liste d'avis suivante pour le restaurant "{restaurant.name}".
-    Fournis une analyse stratégique complète au format JSON.
-
-    Avis : {json.dumps(review_contents[:100])}
-
-    ---
-    Fournis les éléments suivants dans un objet JSON unique :
-    1.  "executive_summary": Un résumé percutant de 2-3 phrases.
-    2.  "strengths": Une liste de 3 à 5 points forts.
-    3.  "weaknesses": Une liste de 3 à 5 axes d'amélioration.
-    4.  "opportunities": Une liste de 2-3 opportunités inattendues.
-    5.  "proactive_suggestions": Une liste de 3 suggestions concrètes (Marketing, Opérationnel, Management) formatées comme "Catégorie: Suggestion.".
-    """
-    
-    # Étape 5: Appeler l'API d'IA
     api_key = os.getenv('OPENAI_API_KEY')
     if not api_key: 
         app.logger.error("Clé API OpenAI manquante.")
         return jsonify({"error": "La clé API pour l'IA n'est pas configurée sur le serveur."}), 500
 
-    openai_url = 'https://api.openai.com/v1/chat/completions'
-    headers = {'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'}
-    payload = { 
-        "model": "gpt-4-turbo", 
-        "messages": [{"role": "user", "content": prompt}], 
-        "response_format": { "type": "json_object" } 
-    }
     try:
-        app.logger.info("Envoi de la requête à l'API OpenAI...")
-        response = requests.post(openai_url, headers=headers, json=payload, timeout=90)
+        response = requests.post('https://api.openai.com/v1/chat/completions', 
+            headers={'Authorization': f'Bearer {api_key}'}, 
+            json={"model": "gpt-4-turbo", "messages": [{"role": "user", "content": prompt}]}, 
+            timeout=30)
         response.raise_for_status()
-        
-        analysis_data = json.loads(response.json()['choices'][0]['message']['content'])
-        app.logger.info("Analyse stratégique générée avec succès.")
-        return jsonify(analysis_data)
-    except requests.exceptions.Timeout:
-        app.logger.error("Timeout lors de l'appel à l'API OpenAI.")
-        return jsonify({"error": "La génération de l'analyse a pris trop de temps. Veuillez réessayer."}), 504
+        translated_text = response.json()['choices'][0]['message']['content'].strip()
+        return jsonify({"translated_text": translated_text})
     except Exception as e:
-        app.logger.error(f"Erreur lors de l'appel à l'API OpenAI: {e}")
-        return jsonify({"error": "Une erreur est survenue lors de la communication avec le service d'IA."}), 502
+        app.logger.error(f"Erreur API OpenAI pour la traduction: {e}")
+        return jsonify({"error": "Erreur lors de la communication avec le service de traduction."}), 502
 
+
+@app.route('/api/strategic-analysis', methods=['POST'])
+@jwt_required()
+def trigger_strategic_analysis():
+    restaurant_id = get_restaurant_id_from_token()
+    restaurant = db.session.get(Restaurant, restaurant_id)
+    if not restaurant: return jsonify({"error": "Restaurant non trouvé"}), 404
+
+    app.logger.info(f"Début de l'analyse stratégique pour {restaurant.name}")
+    Review.query.filter(Review.restaurant_id == restaurant_id, Review.source.in_(['google', 'tripadvisor'])).delete()
+    db.session.commit()
+
+    if restaurant.google_link:
+        actor_id = os.getenv("GOOGLE_MAPS_ACTOR_ID", "nwua9Gu5YrADL7ZDj")
+        raw_reviews = scrape_reviews_with_apify(actor_id, [restaurant.google_link])
+        reviews_to_parse = []
+        if raw_reviews and raw_reviews[0].get('reviews'):
+            reviews_to_parse = raw_reviews[0]['reviews']
+        
+        if reviews_to_parse:
+            parsed = parse_apify_google_reviews(reviews_to_parse)
+            save_reviews_to_db(parsed, restaurant_id, 'google')
+    
+    all_reviews = Review.query.filter_by(restaurant_id=restaurant_id).all()
+    if not all_reviews: return jsonify({"error": "Aucun avis trouvé pour l'analyse."}), 404
+
+    review_contents = [r.content for r in all_reviews if r.content]
+    prompt = f"""Analyse les avis pour le restaurant "{restaurant.name}" et fournis un rapport JSON. Avis: {json.dumps(review_contents[:100])}. JSON doit contenir: "executive_summary", "strengths" (liste), "weaknesses" (liste), "opportunities" (liste), "proactive_suggestions" (liste de "Catégorie: Suggestion.")."""
+    
+    api_key = os.getenv('OPENAI_API_KEY')
+    if not api_key: return jsonify({"error": "Clé API OpenAI non configurée."}), 500
+    
+    try:
+        response = requests.post('https://api.openai.com/v1/chat/completions', 
+            headers={'Authorization': f'Bearer {api_key}'}, 
+            json={"model": "gpt-4-turbo", "messages": [{"role": "user", "content": prompt}], "response_format": {"type": "json_object"}}, 
+            timeout=90)
+        response.raise_for_status()
+        return jsonify(json.loads(response.json()['choices'][0]['message']['content']))
+    except Exception as e:
+        app.logger.error(f"Erreur API OpenAI pour l'analyse: {e}")
+        return jsonify({"error": "Erreur lors de la génération de l'analyse."}), 502
 
 if __name__ == '__main__':
-    # Utilisation de Gunicorn recommandée pour la production, mais pour le dev local :
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
