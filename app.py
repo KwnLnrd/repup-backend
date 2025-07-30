@@ -244,7 +244,7 @@ def generate_unique_slug(name, restaurant_id):
 @app.route('/')
 def index():
     # Marqueur de version pour vérifier le déploiement
-    return jsonify({"status": "ok", "message": "RepUP API is running.", "version": "1.5-final-db-driver"}), 200
+    return jsonify({"status": "ok", "message": "RepUP API is running.", "version": "1.6-final"}), 200
 
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
