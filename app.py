@@ -26,16 +26,15 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 def allowed_file(filename):
-    """Vérifie si l'extension du fichier est autorisée."""
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # --- LOGGING ---
 logging.basicConfig(level=logging.INFO)
 app.logger.setLevel(logging.INFO)
 
 # --- CORS ---
-CORS(app, origins=["*"], supports_credentials=True, allow_headers=["Authorization", "Content-Type"])
+# IMPORTANT: Mettez l'URL de votre frontend Netlify ici pour la production
+CORS(app, origins=["https://repup-avis.netlify.app", "http://127.0.0.1:5500"], supports_credentials=True, allow_headers=["Authorization", "Content-Type"])
 
 # --- CONFIGURATION BDD & JWT ---
 database_url = os.getenv('DATABASE_URL')
@@ -55,10 +54,36 @@ app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 
-# --- MODÈLES DE LA BASE DE DONNÉES ---
+# --- LISTE MAÎTRESSE DES TAGS ---
+PRE_TRANSLATED_TAGS = {
+    'service': [
+        {'key': 'service_attentive', 'fr': 'Attentionné', 'en': 'Attentive', 'es': 'Atento'},
+        {'key': 'service_smiling', 'fr': 'Souriant', 'en': 'Smiling', 'es': 'Sonriente'},
+        {'key': 'service_professional', 'fr': 'Professionnel', 'en': 'Professional', 'es': 'Profesional'},
+        {'key': 'service_efficient', 'fr': 'Efficace', 'en': 'Efficient', 'es': 'Eficiente'},
+        {'key': 'service_good_advice', 'fr': 'De bon conseil', 'en': 'Good advice', 'es': 'Buen consejo'},
+        {'key': 'service_discreet', 'fr': 'Discret', 'en': 'Discreet', 'es': 'Discreto'},
+    ],
+    'occasion': [
+        {'key': 'occasion_birthday', 'fr': 'Anniversaire', 'en': 'Birthday', 'es': 'Cumpleaños'},
+        {'key': 'occasion_romantic', 'fr': 'Dîner romantique', 'en': 'Romantic dinner', 'es': 'Cena romántica'},
+        {'key': 'occasion_friends', 'fr': 'Entre amis', 'en': 'With friends', 'es': 'Con amigos'},
+        {'key': 'occasion_family', 'fr': 'En famille', 'en': 'With family', 'es': 'En familia'},
+        {'key': 'occasion_business', 'fr': 'Affaires', 'en': 'Business', 'es': 'Negocios'},
+        {'key': 'occasion_visit', 'fr': 'Simple visite', 'en': 'Just visiting', 'es': 'Simple visita'},
+    ],
+    'atmosphere': [
+        {'key': 'atmosphere_decoration', 'fr': 'La Décoration', 'en': 'The Decoration', 'es': 'La Decoración'},
+        {'key': 'atmosphere_music', 'fr': 'La Musique', 'en': 'The Music', 'es': 'La Música'},
+        {'key': 'atmosphere_festive', 'fr': 'L\'Énergie Festive', 'en': 'The Festive Energy', 'es': 'La Energía Festiva'},
+        {'key': 'atmosphere_lighting', 'fr': 'L\'Éclairage', 'en': 'The Lighting', 'es': 'La Iluminación'},
+        {'key': 'atmosphere_comfort', 'fr': 'Le Confort', 'en': 'The Comfort', 'es': 'La Comodidad'},
+        {'key': 'atmosphere_romantic', 'fr': 'Romantique', 'en': 'Romantic', 'es': 'Romántico'},
+    ]
+}
 
+# --- MODÈLES DE LA BASE DE DONNÉES ---
 class TokenBlocklist(db.Model):
-    """Modèle pour stocker les tokens JWT invalidés (sur la denylist)."""
     id = db.Column(db.Integer, primary_key=True)
     jti = db.Column(db.String(36), nullable=False, index=True)
     created_at = db.Column(db.DateTime, nullable=False)
@@ -69,22 +94,16 @@ class User(db.Model):
     password_hash = db.Column(db.String(256), nullable=False)
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False)
     restaurant = db.relationship('Restaurant', back_populates='user', uselist=False)
-    
-    # Champs pour la réinitialisation du mot de passe
     reset_password_token = db.Column(db.String(100), unique=True, nullable=True)
     reset_password_expiration = db.Column(db.DateTime, nullable=True)
-    
-    # Champs pour le changement d'e-mail
     change_email_token = db.Column(db.String(100), unique=True, nullable=True)
     change_email_expiration = db.Column(db.DateTime, nullable=True)
     new_email = db.Column(db.String(120), nullable=True)
 
     def set_password(self, password):
-        """Crée un hash pour un nouveau mot de passe."""
         self.password_hash = generate_password_hash(password)
 
     def check_password(self, password):
-        """Vérifie le mot de passe fourni contre le hash stocké."""
         return check_password_hash(self.password_hash, password)
 
 class Restaurant(db.Model):
@@ -102,11 +121,10 @@ class Restaurant(db.Model):
     tag_selections = db.relationship('RestaurantTag', back_populates='restaurant', cascade="all, delete-orphan")
     reviews = db.relationship('Review', back_populates='restaurant', cascade="all, delete-orphan")
 
-# ... (Les autres modèles restent inchangés : RestaurantTag, Server, Dish, Review)
 class RestaurantTag(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
-    tag_key = db.Column(db.String(100), nullable=False, index=True) 
+    tag_key = db.Column(db.String(100), nullable=False, index=True)
     restaurant = db.relationship('Restaurant', back_populates='tag_selections')
 
 class Server(db.Model):
@@ -126,7 +144,7 @@ class Dish(db.Model):
 class Review(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     restaurant_id = db.Column(db.Integer, db.ForeignKey('restaurant.id'), nullable=False, index=True)
-    source = db.Column(db.String(20), nullable=False) # 'google', 'tripadvisor', 'internal'
+    source = db.Column(db.String(20), nullable=False)
     author_name = db.Column(db.String(100))
     rating = db.Column(db.Float, nullable=False)
     content = db.Column(db.Text)
@@ -134,283 +152,250 @@ class Review(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     restaurant = db.relationship('Restaurant', back_populates='reviews')
 
-
 with app.app_context():
     db.create_all()
 
 # --- GESTION DES TOKENS JWT (BLOCKLIST) ---
 @jwt.token_in_blocklist_loader
 def check_if_token_revoked(jwt_header, jwt_payload: dict) -> bool:
-    """Vérifie si un token a été révoqué (présent dans la blocklist)."""
     jti = jwt_payload["jti"]
     token = db.session.query(TokenBlocklist.id).filter_by(jti=jti).scalar()
     return token is not None
 
 @jwt.user_lookup_loader
 def user_lookup_callback(_jwt_header, jwt_data):
-    """Charge un utilisateur depuis la BDD à partir de l'identité du token."""
     identity = jwt_data["sub"]
     return User.query.filter_by(id=int(identity)).one_or_none()
 
 # --- FONCTIONS HELPERS ---
 def generate_unique_slug(name, restaurant_id):
-    """Génère un slug unique pour un restaurant."""
     base_slug = name.lower().replace(' ', '-')
     base_slug = re.sub(r'[^a-z0-9-]', '', base_slug)
     return f"{base_slug}-{restaurant_id}"
-    
-# ... (Les autres fonctions helpers comme save_reviews_to_db, scrape_reviews_with_apify, etc. restent inchangées)
 
-# --- ROUTES D'AUTHENTIFICATION ET D'INSCRIPTION ---
+# --- ROUTES PUBLIQUES ---
+@app.route('/uploads/<path:filename>')
+def uploaded_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+# --- ROUTES D'AUTHENTIFICATION ET PROFIL ---
 @app.route('/api/register', methods=['POST'])
 def register():
-    """Crée un nouveau restaurant et un utilisateur associé."""
     data = request.get_json()
-    email = data.get('email')
-    password = data.get('password')
-    restaurant_name = data.get('restaurant_name')
-
-    if not all([email, password, restaurant_name]):
-        return jsonify({"error": "Données manquantes (email, mot de passe, nom du restaurant)."}), 400
+    email, password, restaurant_name = data.get('email'), data.get('password'), data.get('restaurant_name')
+    if not all([email, password, restaurant_name]): return jsonify({"error": "Données manquantes"}), 400
+    if User.query.filter_by(email=email).first(): return jsonify({"error": "Cet email est déjà utilisé"}), 409
     
-    if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-        return jsonify({"error": "Format d'email invalide."}), 400
-
-    if User.query.filter_by(email=email).first():
-        return jsonify({"error": "Cet email est déjà utilisé."}), 409
-
     new_restaurant = Restaurant(name=restaurant_name, slug="temporary-slug")
     db.session.add(new_restaurant)
     db.session.flush()
-
     new_restaurant.slug = generate_unique_slug(restaurant_name, new_restaurant.id)
     
     new_user = User(email=email, restaurant_id=new_restaurant.id)
     new_user.set_password(password)
     db.session.add(new_user)
     db.session.commit()
-    
-    return jsonify({"message": "Compte créé avec succès. Vous pouvez maintenant vous connecter."}), 201
+    return jsonify({"message": "Compte créé avec succès"}), 201
 
 @app.route('/api/login', methods=['POST'])
 def login():
-    """Authentifie un utilisateur et retourne un token JWT."""
     data = request.get_json()
-    email = data.get('email')
-    password = data.get('password')
-
-    if not email or not password:
-        return jsonify({"error": "L'email et le mot de passe sont requis."}), 400
-
+    email, password = data.get('email'), data.get('password')
     user = User.query.filter_by(email=email).first()
-
     if user and user.check_password(password):
         access_token = create_access_token(identity=user.id)
         return jsonify(access_token=access_token)
-    
-    return jsonify({"error": "Email ou mot de passe incorrect."}), 401
+    return jsonify({"error": "Identifiants invalides"}), 401
 
 @app.route("/api/logout", methods=["POST"])
 @jwt_required()
 def logout():
-    """Révoque le token JWT actuel en l'ajoutant à la blocklist."""
     jti = get_jwt()["jti"]
     now = datetime.now(timezone.utc)
     db.session.add(TokenBlocklist(jti=jti, created_at=now))
     db.session.commit()
     return jsonify(message="Déconnexion réussie.")
 
-# --- ROUTES DE GESTION DE MOT DE PASSE OUBLIÉ ---
 @app.route('/api/forgot-password', methods=['POST'])
 def forgot_password():
-    """Génère un token de réinitialisation de mot de passe."""
     email = request.json.get('email', None)
-    if not email:
-        return jsonify({"error": "L'adresse e-mail est requise."}), 400
-
     user = User.query.filter_by(email=email).first()
     if user:
         user.reset_password_token = secrets.token_urlsafe(32)
         user.reset_password_expiration = datetime.utcnow() + timedelta(hours=1)
         db.session.commit()
-        
-        # Simulation de l'envoi d'e-mail
-        reset_url = f"https://VOTRE_FRONTEND.com/reset-password?token={user.reset_password_token}"
-        app.logger.info(f"--- SIMULATION D'ENVOI D'EMAIL ---")
-        app.logger.info(f"À: {user.email}")
-        app.logger.info(f"Sujet: Réinitialisation de votre mot de passe")
-        app.logger.info(f"Lien de réinitialisation (valide 1 heure): {reset_url}")
-        app.logger.info(f"------------------------------------")
-
-    # Répondre positivement même si l'utilisateur n'existe pas pour ne pas révéler les e-mails enregistrés
-    return jsonify({"message": "Si un compte est associé à cet e-mail, un lien de réinitialisation a été envoyé."}), 200
+        reset_url = f"https://repup-avis.netlify.app/reset-password?token={user.reset_password_token}"
+        app.logger.info(f"--- LIEN DE RESET (SIMULATION EMAIL) --- : {reset_url}")
+    return jsonify({"message": "Si un compte existe, un lien a été envoyé."}), 200
 
 @app.route('/api/reset-password', methods=['POST'])
 def reset_password():
-    """Réinitialise le mot de passe avec un token valide."""
     token = request.json.get('token', None)
     new_password = request.json.get('password', None)
-
-    if not token or not new_password:
-        return jsonify({"error": "Le token et le nouveau mot de passe sont requis."}), 400
-
     user = User.query.filter_by(reset_password_token=token).first()
-
-    if not user:
-        return jsonify({"error": "Token invalide."}), 400
-        
-    if user.reset_password_expiration < datetime.utcnow():
-        # Invalider le token expiré
-        user.reset_password_token = None
-        user.reset_password_expiration = None
-        db.session.commit()
-        return jsonify({"error": "Le token a expiré."}), 400
-
+    if not user or user.reset_password_expiration < datetime.utcnow():
+        return jsonify({"error": "Token invalide ou expiré."}), 400
     user.set_password(new_password)
-    # Invalider le token après utilisation
     user.reset_password_token = None
     user.reset_password_expiration = None
     db.session.commit()
+    return jsonify({"message": "Mot de passe réinitialisé."}), 200
 
-    return jsonify({"message": "Votre mot de passe a été réinitialisé avec succès."}), 200
-
-# --- ROUTES DE GESTION DE PROFIL ---
 @app.route('/api/profile', methods=['GET', 'PUT'])
 @jwt_required()
 def manage_profile():
-    """Récupère (GET) ou met à jour (PUT) les informations du profil."""
-    current_user = get_jwt_identity()
-    user = db.session.get(User, current_user)
-    
+    user = db.session.get(User, get_jwt_identity())
     if request.method == 'GET':
-        return jsonify({
-            "email": user.email,
-            "restaurant_name": user.restaurant.name
-        })
-
+        return jsonify({"email": user.email, "restaurant_name": user.restaurant.name})
     if request.method == 'PUT':
         data = request.get_json()
-        restaurant_name = data.get('restaurant_name')
-        if restaurant_name:
-            user.restaurant.name = restaurant_name
+        if 'restaurant_name' in data:
+            user.restaurant.name = data['restaurant_name']
             db.session.commit()
-            return jsonify({"message": "Profil mis à jour avec succès."})
-        return jsonify({"error": "Aucune donnée à mettre à jour."}), 400
+        return jsonify({"message": "Profil mis à jour."})
 
 @app.route('/api/profile/change-password', methods=['POST'])
 @jwt_required()
 def change_password():
-    """Permet à un utilisateur connecté de changer son mot de passe."""
-    current_user_id = get_jwt_identity()
-    user = db.session.get(User, current_user_id)
-
+    user = db.session.get(User, get_jwt_identity())
     data = request.get_json()
-    current_password = data.get('current_password')
-    new_password = data.get('new_password')
-
-    if not current_password or not new_password:
-        return jsonify({"error": "Le mot de passe actuel et le nouveau sont requis."}), 400
-
-    if not user.check_password(current_password):
-        return jsonify({"error": "Le mot de passe actuel est incorrect."}), 403
-
-    user.set_password(new_password)
+    if not user.check_password(data.get('current_password')):
+        return jsonify({"error": "Mot de passe actuel incorrect."}), 403
+    user.set_password(data.get('new_password'))
     db.session.commit()
+    return jsonify({"message": "Mot de passe changé."})
 
-    return jsonify({"message": "Mot de passe changé avec succès."}), 200
+# --- ROUTES MÉTIER PROTÉGÉES ---
 
-@app.route('/api/profile/change-email', methods=['POST'])
-@jwt_required()
-def request_change_email():
-    """Initie le processus de changement d'e-mail."""
-    current_user_id = get_jwt_identity()
-    user = db.session.get(User, current_user_id)
-    
-    new_email = request.json.get('new_email')
-    if not new_email or not re.match(r"[^@]+@[^@]+\.[^@]+", new_email):
-        return jsonify({"error": "Une nouvelle adresse e-mail valide est requise."}), 400
-        
-    if User.query.filter_by(email=new_email).first():
-        return jsonify({"error": "Cette adresse e-mail est déjà utilisée."}), 409
-
-    user.new_email = new_email
-    user.change_email_token = secrets.token_urlsafe(32)
-    user.change_email_expiration = datetime.utcnow() + timedelta(hours=1)
-    db.session.commit()
-    
-    # Simulation de l'envoi d'e-mail de vérification
-    verify_url = f"https://VOTRE_FRONTEND.com/verify-email?token={user.change_email_token}"
-    app.logger.info(f"--- SIMULATION D'ENVOI D'EMAIL ---")
-    app.logger.info(f"À: {new_email}")
-    app.logger.info(f"Sujet: Confirmez votre nouvelle adresse e-mail")
-    app.logger.info(f"Lien de vérification (valide 1 heure): {verify_url}")
-    app.logger.info(f"------------------------------------")
-    
-    return jsonify({"message": "Un e-mail de vérification a été envoyé à votre nouvelle adresse."}), 200
-
-@app.route('/api/verify-new-email', methods=['POST'])
-def verify_new_email():
-    """Finalise le changement d'e-mail avec un token valide."""
-    token = request.json.get('token')
-    if not token:
-        return jsonify({"error": "Token de vérification manquant."}), 400
-        
-    user = User.query.filter_by(change_email_token=token).first()
-    
-    if not user or user.change_email_expiration < datetime.utcnow():
-        if user: # Le token a juste expiré
-            user.change_email_token = None
-            user.change_email_expiration = None
-            user.new_email = None
-            db.session.commit()
-        return jsonify({"error": "Token invalide ou expiré."}), 400
-        
-    user.email = user.new_email
-    user.new_email = None
-    user.change_email_token = None
-    user.change_email_expiration = None
-    db.session.commit()
-    
-    return jsonify({"message": "Votre adresse e-mail a été mise à jour avec succès."}), 200
-
-# --- AUTRES ROUTES (INCHANGÉES) ---
-# ... (Copiez ici les routes existantes comme /api/restaurant, /api/servers, /api/menu, etc.)
 @app.route('/api/restaurant', methods=['GET', 'PUT'])
 @jwt_required()
 def manage_restaurant_settings():
-    """Gère les paramètres du restaurant (GET pour lire, PUT pour mettre à jour)."""
     user = db.session.get(User, get_jwt_identity())
     restaurant = user.restaurant
-    
     if request.method == 'GET':
         return jsonify({
             "name": restaurant.name, "slug": restaurant.slug, "logoUrl": restaurant.logo_url,
             "primaryColor": restaurant.primary_color, "googleLink": restaurant.google_link,
             "tripadvisorLink": restaurant.tripadvisor_link, "enabledLanguages": restaurant.enabled_languages
         })
-    
-    elif request.method == 'PUT':
+    if request.method == 'PUT':
         data = request.form
         restaurant.name = data.get('name', restaurant.name)
         restaurant.primary_color = data.get('primaryColor', restaurant.primary_color)
         restaurant.google_link = data.get('googleLink', restaurant.google_link)
         restaurant.tripadvisor_link = data.get('tripadvisorLink', restaurant.tripadvisor_link)
-        
-        if 'enabledLanguages' in data:
-            try:
-                restaurant.enabled_languages = json.loads(data.get('enabledLanguages'))
-            except json.JSONDecodeError:
-                return jsonify({"error": "Format JSON invalide pour les langues"}), 400
-
+        if 'enabledLanguages' in data: restaurant.enabled_languages = json.loads(data['enabledLanguages'])
         if 'logo' in request.files:
             file = request.files['logo']
-            if file and file.filename != '' and allowed_file(file.filename):
+            if file and allowed_file(file.filename):
                 filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
                 file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
                 restaurant.logo_url = f'/uploads/{filename}'
-        
         db.session.commit()
         return jsonify({"message": "Paramètres mis à jour", "logoUrl": restaurant.logo_url})
+
+@app.route('/api/options', methods=['GET', 'POST'])
+@jwt_required()
+def manage_options():
+    user = db.session.get(User, get_jwt_identity())
+    restaurant_id = user.restaurant_id
+    if request.method == 'GET':
+        selected_tags = db.session.query(RestaurantTag.tag_key).filter_by(restaurant_id=restaurant_id).all()
+        return jsonify({"available_tags": PRE_TRANSLATED_TAGS, "selected_keys": [key for (key,) in selected_tags]})
+    if request.method == 'POST':
+        new_selected_keys = request.get_json().get('selected_keys', [])
+        RestaurantTag.query.filter_by(restaurant_id=restaurant_id).delete()
+        for key in new_selected_keys:
+            db.session.add(RestaurantTag(restaurant_id=restaurant_id, tag_key=key))
+        db.session.commit()
+        return jsonify({"message": "Options mises à jour."})
+
+@app.route('/api/servers', methods=['GET', 'POST'])
+@jwt_required()
+def manage_servers():
+    user = db.session.get(User, get_jwt_identity())
+    restaurant_id = user.restaurant_id
+    if request.method == 'GET':
+        servers = Server.query.filter_by(restaurant_id=restaurant_id).order_by(Server.name).all()
+        return jsonify([{"id": s.id, "name": s.name, "avatar_url": s.avatar_url} for s in servers])
+    if request.method == 'POST':
+        name = request.form.get('name')
+        if not name: return jsonify({"error": "Le nom est requis"}), 400
+        avatar_url = None
+        if 'avatar' in request.files:
+            file = request.files['avatar']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                avatar_url = f'/uploads/{filename}'
+        new_server = Server(name=name, avatar_url=avatar_url, restaurant_id=restaurant_id)
+        db.session.add(new_server)
+        db.session.commit()
+        return jsonify({"id": new_server.id, "name": new_server.name, "avatar_url": new_server.avatar_url}), 201
+
+@app.route('/api/servers/<int:server_id>', methods=['PUT', 'DELETE'])
+@jwt_required()
+def manage_single_server(server_id):
+    user = db.session.get(User, get_jwt_identity())
+    server = Server.query.filter_by(id=server_id, restaurant_id=user.restaurant_id).first_or_404()
+    if request.method == 'PUT':
+        server.name = request.form.get('name', server.name)
+        if 'avatar' in request.files:
+            file = request.files['avatar']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(f"{datetime.utcnow().timestamp()}_{file.filename}")
+                file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                server.avatar_url = f'/uploads/{filename}'
+        db.session.commit()
+        return jsonify({"id": server.id, "name": server.name, "avatar_url": server.avatar_url})
+    if request.method == 'DELETE':
+        db.session.delete(server)
+        db.session.commit()
+        return '', 204
+
+@app.route('/api/menu', methods=['GET', 'POST'])
+@jwt_required()
+def manage_menu():
+    user = db.session.get(User, get_jwt_identity())
+    restaurant_id = user.restaurant_id
+    if request.method == 'GET':
+        dishes = Dish.query.filter_by(restaurant_id=restaurant_id).order_by(Dish.category, Dish.name).all()
+        menu_by_category = {}
+        for dish in dishes:
+            if dish.category not in menu_by_category: menu_by_category[dish.category] = []
+            menu_by_category[dish.category].append({"id": dish.id, "name": dish.name})
+        return jsonify(menu_by_category)
+    if request.method == 'POST':
+        data = request.get_json()
+        new_dish = Dish(name=data['name'], category=data['category'], restaurant_id=restaurant_id)
+        db.session.add(new_dish)
+        db.session.commit()
+        return jsonify({"id": new_dish.id, "name": new_dish.name, "category": new_dish.category}), 201
+
+@app.route('/api/menu/<int:dish_id>', methods=['PUT', 'DELETE'])
+@jwt_required()
+def manage_single_dish(dish_id):
+    user = db.session.get(User, get_jwt_identity())
+    dish = Dish.query.filter_by(id=dish_id, restaurant_id=user.restaurant_id).first_or_404()
+    if request.method == 'PUT':
+        data = request.get_json()
+        dish.name = data.get('name', dish.name)
+        dish.category = data.get('category', dish.category)
+        db.session.commit()
+        return jsonify({"id": dish.id, "name": dish.name, "category": dish.category})
+    if request.method == 'DELETE':
+        db.session.delete(dish)
+        db.session.commit()
+        return '', 204
+
+@app.route('/api/strategic-analysis', methods=['POST'])
+@jwt_required()
+def trigger_strategic_analysis():
+    user = db.session.get(User, get_jwt_identity())
+    restaurant = user.restaurant
+    # ... (logique de scraping et d'analyse IA)
+    return jsonify({"message": "Analyse en cours..."})
+
 
 # --- DÉMARRAGE DE L'APPLICATION ---
 if __name__ == '__main__':
