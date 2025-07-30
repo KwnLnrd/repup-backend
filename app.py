@@ -40,9 +40,8 @@ database_url = os.getenv('DATABASE_URL')
 if not database_url:
     raise RuntimeError("DATABASE_URL is not set in .env file.")
 
-# CORRECTION DÉFINITIVE : Assurer la compatibilité avec psycopg2
-# La librairie psycopg2 attend un URI commençant par "postgresql://", et non "postgres://".
-# Cette ligne effectue la conversion nécessaire pour que SQLAlchemy se connecte correctement.
+# CORRECTION DÉFINITIVE : Assurer la compatibilité avec la nouvelle librairie psycopg (v3)
+# Cette ligne garantit que l'URI de la base de données est dans le format attendu.
 if database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
@@ -241,7 +240,7 @@ def generate_unique_slug(name, restaurant_id):
 @app.route('/')
 def index():
     # Marqueur de version pour vérifier le déploiement
-    return jsonify({"status": "ok", "message": "RepUP API is running.", "version": "1.2-final"}), 200
+    return jsonify({"status": "ok", "message": "RepUP API is running.", "version": "1.3-stable-db"}), 200
 
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
