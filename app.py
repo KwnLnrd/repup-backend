@@ -155,10 +155,6 @@ class Review(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     restaurant = db.relationship('Restaurant', back_populates='reviews')
 
-# --- CORRECTIF : Création des tables au démarrage de l'application ---
-with app.app_context():
-    db.create_all()
-
 # --- GESTION DES TOKENS JWT (BLOCKLIST) ---
 @jwt.token_in_blocklist_loader
 def check_if_token_revoked(jwt_header, jwt_payload: dict) -> bool:
@@ -180,6 +176,17 @@ def generate_unique_slug(name, restaurant_id):
 # --- ROUTES PUBLIQUES ---
 @app.route('/')
 def index():
+    # Cette route est utilisée par le "health check" de Render.
+    # Nous l'utilisons pour créer les tables de la BDD si elles n'existent pas.
+    try:
+        inspector = db.inspect(db.engine)
+        if not inspector.has_table("user"):
+            with app.app_context():
+                db.create_all()
+            app.logger.info("Tables de la BDD créées car la table 'user' était manquante.")
+    except Exception as e:
+        app.logger.error(f"Erreur lors de la vérification/création des tables : {e}")
+    
     return jsonify({"status": "ok", "message": "RepUP API is running."}), 200
     
 @app.route('/uploads/<path:filename>')
