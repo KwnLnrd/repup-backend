@@ -34,7 +34,6 @@ logging.basicConfig(level=logging.INFO)
 app.logger.setLevel(logging.INFO)
 
 # --- CORS ---
-# Autorise les requêtes cross-origin pour permettre au frontend de communiquer avec l'API
 CORS(app, origins=["*"], supports_credentials=True, allow_headers=["Authorization", "Content-Type"])
 
 # --- CONFIGURATION BDD & JWT ---
@@ -42,14 +41,10 @@ database_url = os.getenv('DATABASE_URL')
 if not database_url:
     raise RuntimeError("DATABASE_URL n'est pas configuré dans le fichier .env.")
 
-# CORRECTION FINALE : Forcer l'utilisation du driver 'psycopg' (v3)
-# SQLAlchemy par défaut cherche 'psycopg2'. En ajoutant '+psycopg', on lui indique
-# explicitement d'utiliser la nouvelle librairie que nous avons installée.
 if database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
 elif database_url.startswith("postgresql://") and "+psycopg" not in database_url:
     database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
-
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -59,6 +54,9 @@ app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 # --- CONFIGURATION DE SÉCURITÉ JWT ---
 app.config["JWT_TOKEN_LOCATION"] = ["headers"]
 app.config["JWT_CSRF_IN_COOKIES"] = False
+# SOLUTION FINALE : La ligne ci-dessous désactive explicitement TOUTE vérification CSRF,
+# ce qui était la cause de l'erreur 422.
+app.config["JWT_CSRF_PROTECTION"] = False 
 app.config["JWT_CSRF_CHECK_FORM"] = False
 
 
@@ -159,7 +157,6 @@ def save_reviews_to_db(reviews_data, restaurant_id, source):
     """Sauvegarde les avis parsés dans la BDD, en évitant les doublons."""
     new_reviews_count = 0
     for review_item in reviews_data:
-        # Vérifie si un avis similaire existe déjà pour éviter les doublons
         existing_review = Review.query.filter_by(
             restaurant_id=restaurant_id, 
             content=review_item.get('content'),
@@ -209,7 +206,7 @@ def parse_apify_google_reviews(items):
     """Transforme les résultats bruts de l'Actor Google Maps."""
     parsed_reviews = []
     for item in items:
-        if item.get('text'): # On ne garde que les avis qui ont du contenu textuel
+        if item.get('text'):
             parsed_reviews.append({
                 'author_name': item.get('name', 'Utilisateur Google'),
                 'rating': item.get('stars', 0),
@@ -241,15 +238,14 @@ def get_restaurant_id_from_verified_token():
 def generate_unique_slug(name, restaurant_id):
     """Génère un slug unique pour un restaurant."""
     base_slug = name.lower().replace(' ', '-')
-    base_slug = re.sub(r'[^a-z0-9-]', '', base_slug) # Nettoie le slug
+    base_slug = re.sub(r'[^a-z0-9-]', '', base_slug)
     return f"{base_slug}-{restaurant_id}"
 
 # --- ROUTES PUBLIQUES ---
 
 @app.route('/')
 def index():
-    # Route de base pour vérifier que l'API est en ligne
-    return jsonify({"status": "ok", "message": "RepUP API is running.", "version": "1.7-syntax-fix"}), 200
+    return jsonify({"status": "ok", "message": "RepUP API is running.", "version": "1.8-final-fix"}), 200
 
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
@@ -264,20 +260,16 @@ def register():
     if not all([email, password, restaurant_name]): return jsonify({"error": "Données manquantes"}), 400
     if User.query.filter_by(email=email).first(): return jsonify({"error": "Cet email est déjà utilisé"}), 409
     
-    # Crée le restaurant d'abord pour obtenir un ID
     new_restaurant = Restaurant(name=restaurant_name, slug="temporary-slug")
     db.session.add(new_restaurant)
-    db.session.flush() # Applique la transaction pour que l'ID soit généré
+    db.session.flush()
 
-    # Utilise l'ID pour créer un slug unique et permanent
     new_restaurant.slug = generate_unique_slug(restaurant_name, new_restaurant.id)
 
-    # Ajoute toutes les options de tags par défaut pour ce nouveau restaurant
     default_tag_keys = [tag['key'] for category in PRE_TRANSLATED_TAGS for tag in PRE_TRANSLATED_TAGS[category]]
     for key in default_tag_keys:
         db.session.add(RestaurantTag(restaurant_id=new_restaurant.id, tag_key=key))
     
-    # Crée l'utilisateur avec le mot de passe haché
     hashed_password = generate_password_hash(password)
     new_user = User(email=email, password_hash=hashed_password, restaurant_id=new_restaurant.id)
     db.session.add(new_user)
@@ -303,15 +295,13 @@ def get_restaurant_public_data(slug):
     
     selected_tag_keys = {tag.tag_key for tag in restaurant.tag_selections}
     
-    # Construit la liste des tags traduits pour le frontend
     tags_for_frontend = {}
     for category, tags_list in PRE_TRANSLATED_TAGS.items():
         tags_for_frontend[category] = []
         for tag_data in tags_list:
             if tag_data['key'] in selected_tag_keys:
-                # Ne fournit que les traductions activées par le restaurant
                 translations = {lang: tag_data.get(lang, tag_data['fr']) for lang in restaurant.enabled_languages}
-                translations['fr'] = tag_data['fr'] # Assure que le français est toujours là
+                translations['fr'] = tag_data['fr']
                 tags_for_frontend[category].append({
                     "key": tag_data['key'],
                     "translations": translations
@@ -358,7 +348,7 @@ def generate_review_proxy():
     
     try:
         response = requests.post(openai_url, headers=headers, json=payload, timeout=20)
-        response.raise_for_status() # Lève une exception pour les codes d'erreur HTTP
+        response.raise_for_status()
         openai_data = response.json()
         review_text = openai_data['choices'][0]['message']['content'].strip()
         return jsonify({"review": review_text})
@@ -437,7 +427,6 @@ def manage_options():
     if request.method == 'POST':
         data = request.get_json()
         new_selected_keys = data.get('selected_keys', [])
-        # Supprime les anciennes sélections et ajoute les nouvelles
         RestaurantTag.query.filter_by(restaurant_id=restaurant_id).delete()
         for key in new_selected_keys:
             db.session.add(RestaurantTag(restaurant_id=restaurant_id, tag_key=key))
@@ -490,7 +479,7 @@ def manage_single_server(server_id):
     if request.method == 'DELETE':
         db.session.delete(server)
         db.session.commit()
-        return '', 204 # Pas de contenu à retourner pour une suppression
+        return '', 204
 
 @app.route('/api/menu', methods=['GET', 'POST'])
 @jwt_required()
@@ -545,7 +534,6 @@ def trigger_strategic_analysis():
     if not restaurant: return jsonify({"error": "Restaurant non trouvé"}), 404
 
     app.logger.info(f"Début de l'analyse pour le restaurant ID: {restaurant_id}")
-    # Supprime les anciens avis externes pour les rafraîchir
     Review.query.filter(
         Review.restaurant_id == restaurant_id,
         Review.source.in_(['google', 'tripadvisor'])
@@ -557,7 +545,6 @@ def trigger_strategic_analysis():
         actor_id = os.getenv("GOOGLE_MAPS_ACTOR_ID", "nwua9Gu5YrADL7ZDj")
         raw_google_reviews = scrape_reviews_with_apify(actor_id, [restaurant.google_link])
         
-        # Le format de retour d'Apify peut varier
         reviews_to_parse = []
         if raw_google_reviews and isinstance(raw_google_reviews, list) and len(raw_google_reviews) > 0:
             place_data = raw_google_reviews[0]
@@ -577,7 +564,6 @@ def trigger_strategic_analysis():
     if not all_reviews:
         return jsonify({"error": "Aucun avis trouvé pour générer une analyse."}), 404
 
-    # Prépare le prompt pour l'IA
     review_contents = [r.content for r in all_reviews if r.content]
     prompt = f"""
     Analyse la liste d'avis suivante pour le restaurant "{restaurant.name}" et fournis une analyse stratégique complète au format JSON valide.
@@ -617,5 +603,4 @@ def trigger_strategic_analysis():
 
 
 if __name__ == '__main__':
-    # Point d'entrée pour le développement local
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
